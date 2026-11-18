@@ -99,7 +99,7 @@ export function PageHeader({
     <header
       className="px-4"
       style={{
-        paddingTop: "calc(env(safe-area-inset-top, 0px) + 0.5rem - 0.25rem * var(--collapse, 0))",
+        paddingTop: "calc(env(safe-area-inset-top, 0px) + 1rem - 0.5rem * var(--collapse, 0))",
         paddingBottom: "calc(0.5rem - 0.25rem * var(--collapse, 0))",
       }}
     >
