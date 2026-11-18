@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>BoodschappenLijstje</Name>
+  <Repository>ghcr.io/jouw-github-naam/boodschappenlijstje:latest</Repository>
+  <Registry>https://github.com/jouw-github-naam/BoodschappenLijstje/pkgs/container/boodschappenlijstje</Registry>
+  <Network>bridge</Network>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/jouw-github-naam/BoodschappenLijstje/issues</Support>
+  <Overview>Gezinsgedeelde boodschappenlijst (iOS PWA) met prijsvergelijking Albert Heijn en Picnic.</Overview>
+  <Category>Tools: Other:</Category>
+  <WebUI>http://[IP]:[PORT:3000]/</WebUI>
+  <ExtraParams>--health-cmd="curl -fsS http://127.0.0.1:3000/api/health || exit 1" --health-interval=30s</ExtraParams>
+  <Config Name="WebUI Poort" Target="3000" Default="3017" Mode="tcp" Description="Externe poort van de web-app" Type="Port" Display="always" Required="true" Mask="false">3017</Config>
+  <Config Name="Appdata" Target="/data" Default="/mnt/user/appdata/boodschappenlijstje" Mode="rw" Description="SQLite database en versleutelingssleutel" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/boodschappenlijstje</Config>
+  <Config Name="OPENROUTER_API_KEY" Target="OPENROUTER_API_KEY" Default="" Mode="" Description="OpenRouter API key (optioneel, zonder key tekst-fallback)" Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="OPENROUTER_DEFAULT_MODEL" Target="OPENROUTER_DEFAULT_MODEL" Default="google/gemini-2.5-flash-lite" Mode="" Description="Standaard LLM-model" Type="Variable" Display="advanced" Required="false" Mask="false">google/gemini-2.5-flash-lite</Config>
+  <Config Name="OPENROUTER_FALLBACK_MODEL" Target="OPENROUTER_FALLBACK_MODEL" Default="openai/gpt-4.1-mini" Mode="" Description="Fallback LLM-model" Type="Variable" Display="advanced" Required="false" Mask="false">openai/gpt-4.1-mini</Config>
+  <Config Name="PICNIC_MIN_ORDER_CENTS" Target="PICNIC_MIN_ORDER_CENTS" Default="3500" Mode="" Description="Minimaal Picnic-bestelbedrag in centen" Type="Variable" Display="advanced" Required="false" Mask="false">3500</Config>
+  <Config Name="TZ" Target="TZ" Default="Europe/Amsterdam" Mode="" Description="Tijdzone" Type="Variable" Display="advanced" Required="false" Mask="false">Europe/Amsterdam</Config>
+  <Config Name="DATA_DIR" Target="DATA_DIR" Default="/data" Mode="" Description="Datamap in de container" Type="Variable" Display="advanced-hide" Required="true" Mask="false">/data</Config>
+</Container>

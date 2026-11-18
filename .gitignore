@@ -1,0 +1,30 @@
+# Secrets & environment
+.env
+.env.*
+!.env.example
+
+# Lokale database & supermarkt-sessietokens (nooit committen!)
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Dependencies & build output
+node_modules/
+.next/
+.next-dev/
+out/
+dist/
+build/
+
+# OS & editor
+.DS_Store
+Thumbs.db
+*.log
+
+# Test scratch & TS build info
+.test-data/
+.e2e-data/
+playwright-report/
+test-results/
+*.tsbuildinfo
