@@ -504,7 +504,7 @@ export function listPurchaseHistory(limit = 500): PurchaseHistoryEntry[] {
 }
 
 export function listRecentPurchaseSuggestions(referenceDate = new Date()): string[] {
-  const since = new Date(referenceDate.getTime() - 28 * 24 * 60 * 60 * 1000).toISOString();
+  const since = new Date(referenceDate.getTime() - 90 * 24 * 60 * 60 * 1000).toISOString();
   return all(
     `WITH recent AS (
        SELECT h.provider, h.tx_id, h.purchased_at,
@@ -528,7 +528,7 @@ export function listRecentPurchaseSuggestions(referenceDate = new Date()): strin
      GROUP BY LOWER(name)
      ORDER BY COUNT(DISTINCT provider || ':' || tx_id) DESC,
               MAX(julianday(purchased_at)) DESC, LOWER(name)
-     LIMIT 4`,
+     LIMIT 50`,
     since,
     referenceDate.toISOString(),
   ).map((row) => String(row.name));

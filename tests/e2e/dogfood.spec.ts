@@ -205,7 +205,7 @@ test("quick add uses the same purchase suggestions for browsing and searching", 
   await expect(page.getByText("Geen suggesties uit recente aankopen.")).toBeVisible();
   suggestions = ["Kaas 1,5 kg", "bananen"];
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  await expect(page.getByText("Vaak gekocht in de afgelopen 4 weken")).toBeVisible();
+  await expect(page.getByText("Vaak gekocht in de afgelopen 3 maanden")).toBeVisible();
   await input.fill("kaa");
   await expect(page.getByRole("button", { name: "bananen" })).toHaveCount(0);
   const request = page.waitForRequest((r) => r.url().endsWith("/api/list") && r.method() === "POST");

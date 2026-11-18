@@ -478,7 +478,7 @@ export default function Home() {
               className="absolute inset-x-0 top-full mt-1.5 max-h-[35dvh] !overflow-y-auto shadow-lg"
             >
               <p className="px-3.5 pb-1 pt-2.5 text-[12.5px] font-medium text-black/55 dark:text-white/60">
-                Vaak gekocht in de afgelopen 4 weken
+                Vaak gekocht in de afgelopen 3 maanden
               </p>
               {matchingSuggestions.length > 0 ? (
                 <ul className="divide-y divide-black/[0.07] dark:divide-white/[0.09]">
@@ -490,7 +490,10 @@ export default function Home() {
                         <button
                           type="button"
                           aria-disabled={!!status}
-                          onClick={() => { if (!status) enqueueAdd([name]); }}
+                          onClick={() => {
+                            if (!status) enqueueAdd([name]);
+                            setShowSuggestions(false);
+                          }}
                           className="flex min-h-[44px] w-full items-center justify-between gap-2 px-3.5 text-left text-[14px] font-semibold aria-disabled:opacity-55"
                         >
                           <span>{name}</span>

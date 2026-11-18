@@ -223,16 +223,16 @@ describe("database", () => {
       { provider: "ah", txId: "e", purchasedAt: "2026-11-06T12:00:00Z", rawName: "Appels" },
       { provider: "ah", txId: "f", purchasedAt: "2026-11-07T12:00:00Z", rawName: "Appels" },
       { provider: "ah", txId: "g", purchasedAt: "2026-11-08T12:00:00Z", rawName: "Appels" },
-      { provider: "ah", txId: "h", purchasedAt: "2026-10-21T11:59:59Z", rawName: "Oude aankoop" },
+      { provider: "ah", txId: "h", purchasedAt: "2026-08-20T11:59:59Z", rawName: "Oude aankoop" },
       { provider: "ah", txId: "i", purchasedAt: "2026-11-18T12:00:01Z", rawName: "Toekomst" },
-      { provider: "ah", txId: "j", purchasedAt: "2026-10-21T12:00:00Z", rawName: "Grens" },
+      { provider: "ah", txId: "j", purchasedAt: "2026-08-20T12:00:00Z", rawName: "Grens" },
     ]);
 
     expect(repo.listRecentPurchaseSuggestions(now)).toEqual(["Appels", "Kaas 1,5 kg", "bananen", "Grens"]);
     repo.insertPurchaseHistory([
       { provider: "ah", txId: "k", purchasedAt: "2026-11-10T12:00:00Z", rawName: "Yoghurt" },
     ]);
-    expect(repo.listRecentPurchaseSuggestions(now)).toEqual(["Appels", "Kaas 1,5 kg", "bananen", "Yoghurt"]);
+    expect(repo.listRecentPurchaseSuggestions(now)).toEqual(["Appels", "Kaas 1,5 kg", "bananen", "Yoghurt", "Grens"]);
   });
 
   it("supports shopping list CRUD with hydration", () => {
