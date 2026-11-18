@@ -33,12 +33,19 @@ interface PicnicTokens {
   pending2fa?: boolean;
 }
 
+interface PicnicPageClient {
+  getClientChunk(chunkId: string): Promise<string>;
+  findServerActionId(page: unknown, modulePath: string, actionName: string): Promise<string | null>;
+}
+
 const MAX_HISTORY_DELIVERIES = 25;
 
 export class PicnicAdapter implements SupermarketAdapter {
   readonly id = "picnic" as const;
   readonly displayName = "Picnic";
   readonly channel = "delivery" as const;
+  private cachedAuthKey: string | null = null;
+  private cachedClient: PicnicClient | null = null;
 
   get capabilities(): AdapterCapabilities {
     return {
@@ -51,7 +58,49 @@ export class PicnicAdapter implements SupermarketAdapter {
   }
 
   private newClient(authKey?: string): PicnicClient {
-    return new PicnicClient({ countryCode: getRuntimeConfig().picnicCountryCode, ...(authKey ? { authKey } : {}) });
+    const client = new PicnicClient({ countryCode: getRuntimeConfig().picnicCountryCode, ...(authKey ? { authKey } : {}) });
+    if (authKey) this.configureActionLookup(client);
+    return client;
+  }
+
+  private configureActionLookup(client: PicnicClient): void {
+    const pages = (client.catalog as unknown as { pages?: PicnicPageClient }).pages;
+    if (!pages) return;
+
+    const resolved = new Map<string, string | null>();
+    pages.findServerActionId = async (page, modulePath, actionName) => {
+      const refs = Object.values(
+        ((page as { modules?: Record<string, unknown> }).modules ?? {}),
+      );
+      const chunks = refs.flatMap((ref) => {
+        if (!Array.isArray(ref) || typeof ref[0] !== "string" || !ref[0].endsWith(modulePath)) return [];
+        return Array.isArray(ref[1]) ? ref[1].filter((chunk): chunk is string => typeof chunk === "string") : [];
+      }).filter((chunk) => !chunk.startsWith("client-components.") && !chunk.startsWith("shared-node_modules_"));
+      const unique = [...new Set(chunks)];
+      const moduleChunk = modulePath.replace(/\.[^.]+$/, "").replaceAll("/", "_");
+      unique.sort((a, b) => Number(b.includes(moduleChunk)) - Number(a.includes(moduleChunk)));
+
+      const lookupKey = `${modulePath}#${actionName}#${unique.join(",")}`;
+      if (resolved.has(lookupKey)) return resolved.get(lookupKey) ?? null;
+      const pattern = new RegExp(`act_${actionName}_[0-9a-f]+`);
+      for (const chunk of unique) {
+        const id = pattern.exec(await pages.getClientChunk(chunk))?.[0] ?? null;
+        if (id) {
+          resolved.set(lookupKey, id);
+          return id;
+        }
+      }
+      resolved.set(lookupKey, null);
+      return null;
+    };
+  }
+
+  private clientFor(authKey: string): PicnicClient {
+    if (!this.cachedClient || this.cachedAuthKey !== authKey) {
+      this.cachedClient = this.newClient(authKey);
+      this.cachedAuthKey = authKey;
+    }
+    return this.cachedClient;
   }
 
   private requireClient(): PicnicClient {
@@ -60,7 +109,7 @@ export class PicnicAdapter implements SupermarketAdapter {
     if (account?.status !== "authenticated" || !tokens?.authKey || tokens.pending2fa) {
       throw new Error("Picnic is niet gekoppeld");
     }
-    return this.newClient(tokens.authKey);
+    return this.clientFor(tokens.authKey);
   }
 
   async getAuthState(): Promise<StoreAuthState> {
@@ -123,6 +172,8 @@ export class PicnicAdapter implements SupermarketAdapter {
         return { state: await this.getAuthState() };
       }
       case "logout": {
+        this.cachedClient = null;
+        this.cachedAuthKey = null;
         deleteStoreAccount("picnic");
         return {
           state: {

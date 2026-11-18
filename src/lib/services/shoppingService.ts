@@ -69,7 +69,10 @@ const CHANNEL = { ah: "in_store", picnic: "delivery" } as const;
 const RADAR_IDS = ["jumbo", "plus"] as const;
 const PROVIDERS: ActiveShoppingProviderId[] = ["ah", "picnic"];
 const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
-const PROVIDER_SEARCH_TIMEOUT_MS = 5_000;
+const PROVIDER_SEARCH_TIMEOUT_MS: Record<ActiveShoppingProviderId, number> = {
+  ah: 12_000,
+  picnic: 15_000,
+};
 const OPTIONAL_AI_TIMEOUT_MS = 3_000;
 
 /* --------------------------------- Helpers -------------------------------- */
@@ -139,12 +142,16 @@ async function safeSearch(provider: ActiveShoppingProviderId, query: string): Pr
     const products = (
       await withDeadline(
         adapter.searchProducts({ query, limit: 35 }),
-        PROVIDER_SEARCH_TIMEOUT_MS,
+        PROVIDER_SEARCH_TIMEOUT_MS[provider],
         { products: [], isMockFallback: true },
         `Productzoekopdracht bij ${provider}`,
       )
     ).products;
-    searchCache.set(key, { expiresAt: Date.now() + SEARCH_CACHE_TTL_MS, products });
+    if (products.length > 0) {
+      searchCache.set(key, { expiresAt: Date.now() + SEARCH_CACHE_TTL_MS, products });
+    } else {
+      searchCache.delete(key);
+    }
     return products;
   } catch (error) {
     console.warn(`Productzoekopdracht bij ${provider} mislukt:`, error);

@@ -135,6 +135,18 @@ describe("login and SMS 2FA", () => {
 });
 
 describe("live search", () => {
+  it("reuses one authenticated client and its Picnic page metadata across searches", async () => {
+    const a = new PicnicAdapter();
+    await connect(a);
+    mocks.getSearchResults.mockResolvedValue({ query: "melk", correctedQuery: null, recipes: [], products: { sections: [] } });
+
+    await a.searchProducts({ query: "melk" });
+    await a.searchProducts({ query: "brood" });
+
+    expect(mocks.ctor).toHaveLength(2);
+    expect(mocks.getSearchResults).toHaveBeenCalledTimes(2);
+  });
+
   it("maps RFY, price ranges, promo labels and unit quantities", async () => {
     const a = new PicnicAdapter();
     await connect(a);
