@@ -15,6 +15,7 @@ import {
   listShoppingItems,
   recordManualPick,
   recordManualReject,
+  searchCachedStoreProducts,
   updateShoppingItem,
   upsertConcept,
   upsertStoreProducts,
@@ -139,15 +140,16 @@ async function safeSearch(provider: ActiveShoppingProviderId, query: string): Pr
     const key = `${provider}:${status}:${query.trim().toLowerCase()}`;
     const hit = searchCache.get(key);
     if (hit && hit.expiresAt > Date.now()) return hit.products;
-    const products = (
-      await withDeadline(
-        adapter.searchProducts({ query, limit: 35 }),
-        PROVIDER_SEARCH_TIMEOUT_MS[provider],
-        { products: [], isMockFallback: true },
-        `Productzoekopdracht bij ${provider}`,
-      )
-    ).products;
-    if (products.length > 0) {
+    const response = await withDeadline(
+      adapter.searchProducts({ query, limit: 35 }),
+      PROVIDER_SEARCH_TIMEOUT_MS[provider],
+      { products: [], isMockFallback: true },
+      `Productzoekopdracht bij ${provider}`,
+    );
+    const products = response.isMockFallback
+      ? searchCachedStoreProducts(provider, query)
+      : response.products;
+    if (!response.isMockFallback && products.length > 0) {
       searchCache.set(key, { expiresAt: Date.now() + SEARCH_CACHE_TTL_MS, products });
     } else {
       searchCache.delete(key);

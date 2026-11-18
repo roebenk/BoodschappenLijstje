@@ -250,6 +250,24 @@ export function getStoreProducts(ids: string[]): NormalizedStoreProduct[] {
   return all(`SELECT * FROM store_products WHERE id IN (${placeholders})`, ...ids).map(rowToProduct);
 }
 
+export function searchCachedStoreProducts(
+  provider: ActiveShoppingProviderId,
+  query: string,
+  limit = 35,
+): NormalizedStoreProduct[] {
+  const terms = query.trim().toLowerCase().split(/\s+/).filter((term) => term.length >= 2);
+  if (terms.length === 0) return [];
+  const clauses = terms.map(() => "LOWER(title) LIKE ?").join(" AND ");
+  return all(
+    `SELECT * FROM store_products
+     WHERE provider = ? AND is_mock_fallback = 0 AND available = 1 AND ${clauses}
+     ORDER BY updated_at DESC LIMIT ?`,
+    provider,
+    ...terms.map((term) => `%${term.replace(/[%_]/g, "")}%`),
+    limit,
+  ).map(rowToProduct);
+}
+
 function rowToConcept(r: Row): CanonicalConcept {
   return {
     id: Number(r.id),
