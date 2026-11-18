@@ -149,7 +149,7 @@ async function safeSearch(provider: ActiveShoppingProviderId, query: string): Pr
     const products = response.isMockFallback
       ? searchCachedStoreProducts(provider, query)
       : response.products;
-    if (!response.isMockFallback && products.length > 0) {
+    if (products.length > 0 && products.every((product) => !product.isMockFallback)) {
       searchCache.set(key, { expiresAt: Date.now() + SEARCH_CACHE_TTL_MS, products });
     } else {
       searchCache.delete(key);
