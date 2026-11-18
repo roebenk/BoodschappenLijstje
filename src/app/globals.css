@@ -57,7 +57,7 @@ button {
 }
 
 .pt-safe {
-  padding-top: calc(env(safe-area-inset-top) + 0.75rem);
+  padding-top: calc(env(safe-area-inset-top, 0px) + 0.5rem);
 }
 
 [vaul-drawer-wrapper] {

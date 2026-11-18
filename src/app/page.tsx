@@ -366,7 +366,7 @@ export default function Home() {
         showBottomBar ? "pb-[calc(env(safe-area-inset-bottom)+9.5rem)]" : "pb-safe"
       }`}
     >
-      <div className="sticky top-0 z-30 bg-[#F2F2F7]/88 backdrop-blur-xl dark:bg-black/82">
+      <div className="sticky top-0 z-30 bg-[var(--canvas)]">
       <PageHeader
         collapseOnScroll
         title="Boodschappen"

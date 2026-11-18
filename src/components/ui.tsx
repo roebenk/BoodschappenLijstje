@@ -85,45 +85,45 @@ export function PageHeader({
 
   if (!collapseOnScroll) {
     return (
-      <header className="pt-safe flex items-end justify-between gap-3 px-4 pb-2">
-        <div className="min-w-0 flex-1">
-          {eyebrow && <div className="mb-0.5">{eyebrow}</div>}
-          <h1 className="truncate text-[28px] font-bold leading-tight tracking-tight">{title}</h1>
+      <header className="pt-safe sticky top-0 z-30 bg-[var(--canvas)] px-4 pb-2">
+        {eyebrow && <div className="mb-0.5">{eyebrow}</div>}
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="min-w-0 flex-1 truncate text-[28px] font-bold leading-tight tracking-tight">{title}</h1>
+          {right && <div className="shrink-0">{right}</div>}
         </div>
-        {right && <div className="shrink-0 pb-0.5">{right}</div>}
       </header>
     );
   }
 
   return (
     <header
-      className="flex items-center justify-between gap-3 px-4"
+      className="px-4"
       style={{
-        paddingTop: "calc(env(safe-area-inset-top) + 0.75rem - 0.375rem * var(--collapse, 0))",
+        paddingTop: "calc(env(safe-area-inset-top, 0px) + 0.5rem - 0.25rem * var(--collapse, 0))",
         paddingBottom: "calc(0.5rem - 0.25rem * var(--collapse, 0))",
       }}
     >
-      <div className="min-w-0 flex-1">
-        {eyebrow && (
-          <div
-            className="overflow-hidden"
-            style={{
-              maxHeight: "calc(1.5rem * (1 - var(--collapse, 0)))",
-              opacity: "calc(1 - var(--collapse, 0))",
-              marginBottom: "calc(0.125rem * (1 - var(--collapse, 0)))",
-            }}
-          >
-            {eyebrow}
-          </div>
-        )}
+      {eyebrow && (
+        <div
+          className="overflow-hidden"
+          style={{
+            maxHeight: "calc(1.5rem * (1 - var(--collapse, 0)))",
+            opacity: "calc(1 - var(--collapse, 0))",
+            marginBottom: "calc(0.125rem * (1 - var(--collapse, 0)))",
+          }}
+        >
+          {eyebrow}
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-3">
         <h1
-          className="truncate font-bold leading-tight tracking-tight"
+          className="min-w-0 flex-1 truncate font-bold leading-tight tracking-tight"
           style={{ fontSize: "calc(28px - 9px * var(--collapse, 0))" }}
         >
           {title}
         </h1>
+        {right && <div className="shrink-0">{right}</div>}
       </div>
-      {right && <div className="shrink-0">{right}</div>}
     </header>
   );
 }
