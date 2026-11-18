@@ -126,6 +126,14 @@ describe("relevance filter + pricing", () => {
     expect(filterRelevantProductsDeterministic("halfvolle melk", melk).map((p) => p.id)).toEqual(["ah:4"]);
   });
 
+  it("does not treat a broad store category as a positive product match", () => {
+    const hits = [
+      product("ah:1", { title: "AH Witte vrije uitloopeieren M", category: "Zuivel, eieren, boter" }),
+      product("ah:2", { title: "AH Drinkyoghurt aardbei kerssmaak", category: "Zuivel, eieren, boter" }),
+    ];
+    expect(filterRelevantProductsDeterministic("eieren", hits).map((p) => p.id)).toEqual(["ah:1"]);
+  });
+
   it("fairly compares 1+1 gratis 500g tubs against 1kg house pots", () => {
     const parsed = parseGroceryInput("4x 1kg magere kwark");
     const opts = { allowOvershoot: parsed.allowOvershootDefault, channel: "in_store" as const };

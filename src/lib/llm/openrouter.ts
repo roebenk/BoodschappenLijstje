@@ -112,6 +112,10 @@ export function preFilterBeforeLlm<T extends Pick<NormalizedStoreProduct, "title
 
 function tokenMatchesHaystack(token: string, haystack: string): boolean {
   const singular = singularizeDutchWord(token);
+  if (singular.length < 3) {
+    return haystack.includes(token) ||
+      haystack.split(/[^a-z0-9]+/).some((word) => word === singular || word.startsWith(`${singular}er`));
+  }
   const stems = new Set([token.slice(0, 5), singular.slice(0, 5)]);
   for (const s of stems) {
     if (s && haystack.includes(s)) return true;
@@ -128,11 +132,10 @@ export function filterRelevantProductsDeterministic<
   const specificTokens = tokens.filter((t) => !RELAXABLE_CATEGORY_NOUNS.has(t));
   return products.filter((p) => {
     const title = normalizeText(`${p.brand ?? ""} ${p.title}`);
-    const fullText = p.category ? `${title} ${normalizeText(p.category)}` : title;
     if (!passesNegativeRules(q, title, p.category ?? "")) return false;
-    if (tokens.every((t) => tokenMatchesHaystack(t, fullText))) return true;
+    if (tokens.every((t) => tokenMatchesHaystack(t, title))) return true;
     // Allow omitting generic category nouns (e.g. "chips" in "Picnic Cheese onion") when >=2 specific tokens match.
-    if (specificTokens.length >= 2 && specificTokens.every((t) => tokenMatchesHaystack(t, fullText))) {
+    if (specificTokens.length >= 2 && specificTokens.every((t) => tokenMatchesHaystack(t, title))) {
       return true;
     }
     return false;
