@@ -69,6 +69,8 @@ const CHANNEL = { ah: "in_store", picnic: "delivery" } as const;
 const RADAR_IDS = ["jumbo", "plus"] as const;
 const PROVIDERS: ActiveShoppingProviderId[] = ["ah", "picnic"];
 const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
+const PROVIDER_SEARCH_TIMEOUT_MS = 5_000;
+const OPTIONAL_AI_TIMEOUT_MS = 3_000;
 
 /* --------------------------------- Helpers -------------------------------- */
 
@@ -83,6 +85,19 @@ function ensureCacheMatchesDb(): void {
     radarCache.clear();
     cachedDbInstance = db;
   }
+}
+
+function withDeadline<T>(promise: Promise<T>, timeoutMs: number, fallback: T, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`${label} overschreed ${timeoutMs} ms; fallback wordt gebruikt`);
+      resolve(fallback);
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 export function clearSearchCache(): void {
@@ -121,10 +136,18 @@ async function safeSearch(provider: ActiveShoppingProviderId, query: string): Pr
     const key = `${provider}:${status}:${query.trim().toLowerCase()}`;
     const hit = searchCache.get(key);
     if (hit && hit.expiresAt > Date.now()) return hit.products;
-    const products = (await adapter.searchProducts({ query, limit: 35 })).products;
+    const products = (
+      await withDeadline(
+        adapter.searchProducts({ query, limit: 35 }),
+        PROVIDER_SEARCH_TIMEOUT_MS,
+        { products: [], isMockFallback: true },
+        `Productzoekopdracht bij ${provider}`,
+      )
+    ).products;
     searchCache.set(key, { expiresAt: Date.now() + SEARCH_CACHE_TTL_MS, products });
     return products;
-  } catch {
+  } catch (error) {
+    console.warn(`Productzoekopdracht bij ${provider} mislukt:`, error);
     return [];
   }
 }
@@ -236,7 +259,12 @@ async function evaluateLine(
     safeSearch("ah", parsed.searchQuery),
     safeSearch("picnic", parsed.searchQuery),
     findRadarDeals(parsed.searchQuery),
-    expandSearchQueries(parsed.searchQuery),
+    withDeadline(
+      expandSearchQueries(parsed.searchQuery),
+      OPTIONAL_AI_TIMEOUT_MS,
+      { alternatives: [], safeAlternatives: [] },
+      "AI-zoekuitbreiding",
+    ),
   ]);
   const expanded = await Promise.all(
     expansion.alternatives.map(async (term) => Promise.all([safeSearch("ah", term), safeSearch("picnic", term)])),
@@ -254,8 +282,31 @@ async function evaluateLine(
       .flatMap((term) => filterRelevantProductsDeterministic(term, all)).map((p) => p.id),
   );
 
-  const filtered = await filterRelevantProducts(
-    parsed.searchQuery, all, slug, expansion.alternatives, expansion.safeAlternatives,
+  const deterministicProducts = filterRelevantProductsDeterministic(parsed.searchQuery, all);
+  const deterministicAlternativeProducts = expansion.safeAlternatives.flatMap((term) =>
+    filterRelevantProductsDeterministic(term, all),
+  );
+  const deterministicAccepted = [...new Map(
+    [...deterministicProducts, ...deterministicAlternativeProducts].map((product) => [product.id, product]),
+  ).values()];
+  const deterministicAcceptedIds = new Set(deterministicAccepted.map((product) => product.id));
+  const deterministicAlternativeIds = deterministicAlternativeProducts
+    .filter((product) => !deterministicProducts.some((exact) => exact.id === product.id))
+    .map((product) => product.id);
+  const filtered = await withDeadline(
+    filterRelevantProducts(
+      parsed.searchQuery, all, slug, expansion.alternatives, expansion.safeAlternatives,
+    ),
+    OPTIONAL_AI_TIMEOUT_MS,
+    {
+      products: deterministicAccepted,
+      alternativeProductIds: deterministicAlternativeIds,
+      rejectedProductIds: all.filter((product) => !deterministicAcceptedIds.has(product.id)).map((product) => product.id),
+      conceptSlug: slug,
+      usedLlm: false,
+      apiCalls: 0,
+    },
+    "AI-productselectie",
   );
   const relevant = new Set(filtered.products.map((p) => p.id));
   const alternatives = new Set(filtered.alternativeProductIds);
