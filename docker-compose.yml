@@ -1,6 +1,6 @@
 services:
   boodschappenlijstje:
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-jouw-github-naam}/boodschappenlijstje:latest
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-roebenk}/boodschappenlijstje:latest
     build: .
     container_name: boodschappenlijstje
     restart: unless-stopped

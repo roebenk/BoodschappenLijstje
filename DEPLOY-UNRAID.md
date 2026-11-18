@@ -1,14 +1,14 @@
 # BoodschappenLijstje op Unraid
 
-Op de Windows-pc draait geen Docker; je hebt daarom twee routes. Vervang overal `jouw-github-naam` door je GitHub-gebruikersnaam.
+Op de Windows-pc draait geen Docker; je hebt daarom twee routes. De standaardconfiguratie gebruikt de persoonlijke GitHub-account `roebenk`.
 
 ## Optie A (aanbevolen): automatisch bouwen via GitHub Actions (GHCR)
 
 1. Zet de code in een GitHub-repo (`git push` naar `main`).
-2. De workflow `.github/workflows/docker-publish.yml` bouwt automatisch een `linux/amd64` image en publiceert `ghcr.io/jouw-github-naam/boodschappenlijstje:latest`.
-3. Maak het package openbaar (GitHub → Packages → boodschappenlijstje → Package settings → Visibility), of log op Unraid in bij ghcr.io met een Personal Access Token (`read:packages`).
+2. De workflow `.github/workflows/docker-publish.yml` bouwt automatisch een `linux/amd64` image en publiceert `ghcr.io/roebenk/boodschappenlijstje:latest`.
+3. Houd het package privé en log op Unraid in bij ghcr.io met een Personal Access Token (`read:packages`).
 4. Kopieer `unraid/boodschappenlijstje-template.xml` naar `/boot/config/plugins/dockerMan/templates-user/` op Unraid (via SMB-share `flash` of SSH).
-5. Unraid → Docker → **Add Container** → kies template **BoodschappenLijstje**. Pas de repository aan naar jouw GitHub-naam, vul eventueel `OPENROUTER_API_KEY` in, klik **Apply**.
+5. Unraid → Docker → **Add Container** → kies template **BoodschappenLijstje**. Vul eventueel `OPENROUTER_API_KEY` in en klik **Apply**.
 6. Open `http://<unraid-ip>:3017/`.
 
 Updaten: push nieuwe code, wacht tot de workflow klaar is, en klik in Unraid op **Check for updates** → **Apply update**.

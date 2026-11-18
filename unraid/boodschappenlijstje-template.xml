@@ -1,12 +1,12 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>BoodschappenLijstje</Name>
-  <Repository>ghcr.io/jouw-github-naam/boodschappenlijstje:latest</Repository>
-  <Registry>https://github.com/jouw-github-naam/BoodschappenLijstje/pkgs/container/boodschappenlijstje</Registry>
+  <Repository>ghcr.io/roebenk/boodschappenlijstje:latest</Repository>
+  <Registry>https://github.com/roebenk/BoodschappenLijstje/pkgs/container/boodschappenlijstje</Registry>
   <Network>bridge</Network>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
-  <Support>https://github.com/jouw-github-naam/BoodschappenLijstje/issues</Support>
+  <Support>https://github.com/roebenk/BoodschappenLijstje/issues</Support>
   <Overview>Gezinsgedeelde boodschappenlijst (iOS PWA) met prijsvergelijking Albert Heijn en Picnic.</Overview>
   <Category>Tools: Other:</Category>
   <WebUI>http://[IP]:[PORT:3000]/</WebUI>
