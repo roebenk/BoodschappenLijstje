@@ -35,7 +35,7 @@ vi.mock("picnic-api", () => ({
   },
 }));
 
-import { PicnicAdapter } from "@/lib/providers/picnic";
+import { PicnicAdapter, createCachedIpv4Lookup } from "@/lib/providers/picnic";
 import { cleanPicnicUnitSize, formatPicnicTitle, normalizePicnicTile, parsePromoLabel, parseUnitQuantity } from "@/lib/providers/picnic/parse";
 import { JumboRadarAdapter, PlusRadarAdapter, parseCheckjebon } from "@/lib/providers/radar";
 
@@ -145,6 +145,39 @@ describe("live search", () => {
 
     expect(mocks.ctor).toHaveLength(2);
     expect(mocks.getSearchResults).toHaveBeenCalledTimes(2);
+  });
+
+  it("caches IPv4 DNS lookups, deduplicates concurrent lookups and invalidates on error", async () => {
+    let calls = 0;
+    const resolver = createCachedIpv4Lookup(async () => {
+      calls++;
+      await new Promise((r) => setTimeout(r, 10));
+      return [
+        { address: "2001:db8::1", family: 6 },
+        { address: "18.239.69.103", family: 4 },
+      ];
+    }, 60_000);
+
+    const runLookup = (all = false) =>
+      new Promise<{ address: unknown; family?: number }>((resolve, reject) => {
+        resolver.lookup("storefront-prod.nl.picnicinternational.com", { all }, (err, address, family) => {
+          if (err) reject(err);
+          else resolve({ address, family });
+        });
+      });
+
+    const [first, second] = await Promise.all([runLookup(false), runLookup(true)]);
+    expect(calls).toBe(1);
+    expect(first).toEqual({ address: "18.239.69.103", family: 4 });
+    expect(second.address).toEqual([{ address: "18.239.69.103", family: 4 }]);
+
+    const cached = await runLookup(false);
+    expect(calls).toBe(1);
+    expect(cached).toEqual({ address: "18.239.69.103", family: 4 });
+
+    resolver.invalidate("storefront-prod.nl.picnicinternational.com");
+    await runLookup(false);
+    expect(calls).toBe(2);
   });
 
   it("maps RFY, price ranges, promo labels and unit quantities", async () => {

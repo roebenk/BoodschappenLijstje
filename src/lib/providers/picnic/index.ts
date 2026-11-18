@@ -1,5 +1,5 @@
-import { lookup } from "node:dns";
-import { request as httpsRequest } from "node:https";
+import { lookup as dnsLookup, type LookupAddress, type LookupOptions } from "node:dns";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import PicnicClient from "picnic-api";
 import { getRuntimeConfig } from "@/lib/config";
 import {
@@ -41,9 +41,90 @@ interface PicnicPageClient {
 }
 
 const MAX_HISTORY_DELIVERIES = 25;
+const PICNIC_DNS_TTL_MS = 5 * 60 * 1000;
 const PICNIC_FETCH_MARKER = Symbol.for("boodschappenlijstje.picnic-ipv4-fetch");
 
 type FetchGlobal = typeof globalThis & { [PICNIC_FETCH_MARKER]?: boolean };
+
+export interface CachedIpv4Resolver {
+  lookup: (
+    hostname: string,
+    options: LookupOptions,
+    callback: (err: NodeJS.ErrnoException | null, address: string | LookupAddress[], family?: number) => void,
+  ) => void;
+  invalidate: (hostname: string) => void;
+  clear: () => void;
+}
+
+export function createCachedIpv4Lookup(
+  resolveAll: (hostname: string) => Promise<LookupAddress[]> = (hostname) =>
+    new Promise((resolve, reject) => {
+      dnsLookup(hostname, { all: true, verbatim: true }, (error, addresses) => {
+        if (error) reject(error);
+        else resolve(addresses);
+      });
+    }),
+  ttlMs = PICNIC_DNS_TTL_MS,
+): CachedIpv4Resolver {
+  const cache = new Map<string, { expiresAt: number; addresses: string[] }>();
+  const inflight = new Map<string, Promise<string[]>>();
+
+  const resolveIpv4 = (hostname: string): Promise<string[]> => {
+    const cached = cache.get(hostname);
+    if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.addresses);
+
+    const existing = inflight.get(hostname);
+    if (existing) return existing;
+
+    const pending = resolveAll(hostname)
+      .then((addresses) => {
+        const ipv4 = addresses.filter((entry) => entry.family === 4).map((entry) => entry.address);
+        if (ipv4.length === 0) throw new Error(`Geen IPv4-adres voor ${hostname}`);
+        cache.set(hostname, { expiresAt: Date.now() + ttlMs, addresses: ipv4 });
+        return ipv4;
+      })
+      .finally(() => {
+        inflight.delete(hostname);
+      });
+
+    inflight.set(hostname, pending);
+    return pending;
+  };
+
+  return {
+    lookup(hostname, options, callback) {
+      resolveIpv4(hostname).then(
+        (ipv4) => {
+          if (options?.all) {
+            callback(null, ipv4.map((address) => ({ address, family: 4 })));
+            return;
+          }
+          const selected = ipv4[Math.floor(Math.random() * ipv4.length)]!;
+          callback(null, selected, 4);
+        },
+        (error: unknown) => {
+          callback((error instanceof Error ? error : new Error(String(error))) as NodeJS.ErrnoException, "", 4);
+        },
+      );
+    },
+    invalidate(hostname) {
+      cache.delete(hostname);
+    },
+    clear() {
+      cache.clear();
+      inflight.clear();
+    },
+  };
+}
+
+const picnicDns = createCachedIpv4Lookup();
+const picnicHttpsAgent = new HttpsAgent({
+  keepAlive: true,
+  keepAliveMsecs: 30_000,
+  maxSockets: 16,
+  maxFreeSockets: 4,
+  lookup: picnicDns.lookup,
+});
 
 async function requestBody(body: BodyInit | null | undefined): Promise<Buffer | undefined> {
   if (body == null) return undefined;
@@ -66,18 +147,11 @@ async function picnicIpv4Fetch(input: RequestInfo | URL, init?: RequestInit): Pr
     const req = httpsRequest(
       url,
       {
+        agent: picnicHttpsAgent,
         method,
         headers: Object.fromEntries(headers),
         timeout: 12_000,
-        lookup: (hostname, options, callback) => {
-          lookup(hostname, { all: true, verbatim: true }, (error, addresses) => {
-            if (error) return callback(error, "", 4);
-            const ipv4 = addresses.filter((address) => address.family === 4);
-            if (ipv4.length === 0) return callback(new Error(`Geen IPv4-adres voor ${hostname}`), "", 4);
-            const selected = ipv4[Math.floor(Math.random() * ipv4.length)]!;
-            callback(null, options.all ? [{ address: selected.address, family: 4 }] : selected.address as never, 4);
-          });
-        },
+        lookup: picnicDns.lookup,
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -98,8 +172,14 @@ async function picnicIpv4Fetch(input: RequestInfo | URL, init?: RequestInit): Pr
     );
     const abort = () => req.destroy(new DOMException("The operation was aborted", "AbortError"));
     init?.signal?.addEventListener("abort", abort, { once: true });
-    req.on("timeout", () => req.destroy(new Error("Picnic HTTPS timeout")));
-    req.on("error", reject);
+    req.on("timeout", () => {
+      picnicDns.invalidate(url.hostname);
+      req.destroy(new Error("Picnic HTTPS timeout"));
+    });
+    req.on("error", (error) => {
+      if (!init?.signal?.aborted) picnicDns.invalidate(url.hostname);
+      reject(error);
+    });
     req.on("close", () => init?.signal?.removeEventListener("abort", abort));
     if (body) req.write(body);
     req.end();

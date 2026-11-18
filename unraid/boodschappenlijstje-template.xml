@@ -10,7 +10,7 @@
   <Overview>Gezinsgedeelde boodschappenlijst (iOS PWA) met prijsvergelijking Albert Heijn en Picnic.</Overview>
   <Category>Tools: Other:</Category>
   <WebUI>http://[IP]:[PORT:3000]/</WebUI>
-  <ExtraParams>--health-cmd="curl -fsS http://127.0.0.1:3000/api/health || exit 1" --health-interval=30s</ExtraParams>
+  <ExtraParams>--dns=1.1.1.1 --dns=8.8.8.8 --health-cmd="curl -fsS http://127.0.0.1:3000/api/health || exit 1" --health-interval=30s</ExtraParams>
   <Config Name="WebUI Poort" Target="3000" Default="3017" Mode="tcp" Description="Externe poort van de web-app" Type="Port" Display="always" Required="true" Mask="false">3017</Config>
   <Config Name="Appdata" Target="/data" Default="/mnt/user/appdata/boodschappenlijstje" Mode="rw" Description="SQLite database en versleutelingssleutel" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/boodschappenlijstje</Config>
   <Config Name="OPENROUTER_API_KEY" Target="OPENROUTER_API_KEY" Default="" Mode="" Description="OpenRouter API key (optioneel, zonder key tekst-fallback)" Type="Variable" Display="always" Required="false" Mask="true"></Config>

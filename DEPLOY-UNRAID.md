@@ -42,3 +42,5 @@ Updaten: push nieuwe code, wacht tot de workflow klaar is, en klik in Unraid op 
 
 - Health: `http://<unraid-ip>:3017/api/health`
 - Logs: `docker logs boodschappenlijstje`
+- Netwerk/DNS: `docker-compose.yml` en de Unraid-template stellen expliciet `1.1.1.1` en `8.8.8.8` in als container-DNS, zodat een lokale DNS-container op `br0` (`macvlan` zonder host-access) geen 4–5s DNS-timeouts veroorzaakt.
+
