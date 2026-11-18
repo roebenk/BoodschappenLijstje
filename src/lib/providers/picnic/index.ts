@@ -1,3 +1,5 @@
+import { lookup } from "node:dns";
+import { request as httpsRequest } from "node:https";
 import PicnicClient from "picnic-api";
 import { getRuntimeConfig } from "@/lib/config";
 import {
@@ -39,6 +41,85 @@ interface PicnicPageClient {
 }
 
 const MAX_HISTORY_DELIVERIES = 25;
+const PICNIC_FETCH_MARKER = Symbol.for("boodschappenlijstje.picnic-ipv4-fetch");
+
+type FetchGlobal = typeof globalThis & { [PICNIC_FETCH_MARKER]?: boolean };
+
+async function requestBody(body: BodyInit | null | undefined): Promise<Buffer | undefined> {
+  if (body == null) return undefined;
+  if (typeof body === "string") return Buffer.from(body);
+  if (body instanceof URLSearchParams) return Buffer.from(body.toString());
+  if (body instanceof Blob) return Buffer.from(await body.arrayBuffer());
+  if (ArrayBuffer.isView(body)) return Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+  if (body instanceof ArrayBuffer) return Buffer.from(body);
+  throw new TypeError(`Picnic request body type ${body.constructor.name} is niet ondersteund`);
+}
+
+async function picnicIpv4Fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+  const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+  const body = await requestBody(init?.body ?? (input instanceof Request ? input.body : undefined));
+  if (body) headers.set("content-length", String(body.length));
+
+  return new Promise<Response>((resolve, reject) => {
+    const req = httpsRequest(
+      url,
+      {
+        method,
+        headers: Object.fromEntries(headers),
+        timeout: 12_000,
+        lookup: (hostname, options, callback) => {
+          lookup(hostname, { all: true, verbatim: true }, (error, addresses) => {
+            if (error) return callback(error, "", 4);
+            const ipv4 = addresses.filter((address) => address.family === 4);
+            if (ipv4.length === 0) return callback(new Error(`Geen IPv4-adres voor ${hostname}`), "", 4);
+            const selected = ipv4[Math.floor(Math.random() * ipv4.length)]!;
+            callback(null, options.all ? [{ address: selected.address, family: 4 }] : selected.address as never, 4);
+          });
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          const responseHeaders = new Headers();
+          for (const [name, value] of Object.entries(res.headers)) {
+            if (Array.isArray(value)) value.forEach((entry) => responseHeaders.append(name, entry));
+            else if (value != null) responseHeaders.set(name, value);
+          }
+          resolve(new Response(Buffer.concat(chunks), {
+            status: res.statusCode ?? 500,
+            statusText: res.statusMessage,
+            headers: responseHeaders,
+          }));
+        });
+      },
+    );
+    const abort = () => req.destroy(new DOMException("The operation was aborted", "AbortError"));
+    init?.signal?.addEventListener("abort", abort, { once: true });
+    req.on("timeout", () => req.destroy(new Error("Picnic HTTPS timeout")));
+    req.on("error", reject);
+    req.on("close", () => init?.signal?.removeEventListener("abort", abort));
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+function installPicnicIpv4Fetch(): void {
+  const fetchGlobal = globalThis as FetchGlobal;
+  if (fetchGlobal[PICNIC_FETCH_MARKER]) return;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+    return url.hostname.endsWith("picnicinternational.com")
+      ? picnicIpv4Fetch(input, init)
+      : originalFetch(input, init);
+  }) as typeof fetch;
+  fetchGlobal[PICNIC_FETCH_MARKER] = true;
+}
+
+installPicnicIpv4Fetch();
 
 export class PicnicAdapter implements SupermarketAdapter {
   readonly id = "picnic" as const;
