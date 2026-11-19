@@ -134,6 +134,20 @@ export function setSelectedAiModel(model: string): void {
   );
 }
 
+export function getSelectedAiFallbackModel(): string | null {
+  const r = one("SELECT value FROM app_settings WHERE key = 'ai_fallback_model'");
+  return str(r?.value);
+}
+
+export function setSelectedAiFallbackModel(model: string): void {
+  run(
+    `INSERT INTO app_settings (key, value, updated_at) VALUES ('ai_fallback_model', ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    model,
+    now(),
+  );
+}
+
 /* -------------------------- Dismissed week deals --------------------------- */
 
 export function getDismissedDealKeys(): Set<string> {
@@ -143,6 +157,13 @@ export function getDismissedDealKeys(): Set<string> {
 export function countDismissedDeals(): number {
   const r = one("SELECT COUNT(*) AS n FROM dismissed_week_deals");
   return Number(r?.n ?? 0);
+}
+
+export function listDismissedDeals(): Array<{ dealKey: string; label: string | null }> {
+  return all("SELECT deal_key, label FROM dismissed_week_deals ORDER BY created_at DESC").map((r) => ({
+    dealKey: String(r.deal_key),
+    label: r.label === null || r.label === undefined ? null : String(r.label),
+  }));
 }
 
 export function dismissWeekDeal(dealKey: string, label?: string | null): void {
@@ -408,6 +429,7 @@ export interface CachedConceptMatches {
   validProductIds: string[];
   alternativeProductIds: string[];
   invalidProductIds: string[];
+  manualProductIds: string[];
 }
 
 /** Cached LLM/history/manual matches for a concept slug or any equivalent alias slugs. */
@@ -422,6 +444,7 @@ export function getCachedConceptMatches(
   const alternativeSet = new Set<string>();
   const exactSet = new Set<string>();
   const invalidSet = new Set<string>();
+  const manualSet = new Set<string>();
   for (const c of concepts) {
     const rows = all(
       `SELECT store_product_id, is_valid_match, source, relevance_version, match_kind FROM concept_product_links
@@ -432,6 +455,7 @@ export function getCachedConceptMatches(
     for (const r of rows) {
       const pid = String(r.store_product_id);
       if (r.is_valid_match) {
+        if (r.source === "manual") manualSet.add(pid);
         validSet.add(pid);
         invalidSet.delete(pid);
         if (r.match_kind === "alternative" && !exactSet.has(pid)) alternativeSet.add(pid);
@@ -449,6 +473,7 @@ export function getCachedConceptMatches(
     validProductIds: [...validSet],
     alternativeProductIds: [...alternativeSet],
     invalidProductIds: [...invalidSet],
+    manualProductIds: [...manualSet],
   };
 }
 

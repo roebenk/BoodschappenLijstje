@@ -60,6 +60,9 @@ export function PushToStoresSheet({
         method: "POST",
         body: { mode: "push", providers, autoCheckPushed },
       });
+      if (res.skippedItems?.length) {
+        toast.warning(`Niet meegestuurd: ${res.skippedItems.map((item) => item.title).join(", ")}. Nog product kiezen.`);
+      }
       let anySucceeded = false;
       for (const r of res.results ?? []) {
         const name = r.provider === "ah" ? "Albert Heijn" : "Picnic";
@@ -94,6 +97,13 @@ export function PushToStoresSheet({
       {loading && !preview && <p className="py-10 text-center text-[16px] text-black/60 dark:text-white/60">Voorbeeld maken…</p>}
       {preview && (
         <div className="space-y-4">
+          {!!preview.skippedItems?.length && (
+            <div role="status" className="rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface)] p-3.5 text-[var(--cp-text)]">
+              <p className="font-semibold">Niet meegestuurd: nog product kiezen</p>
+              <ul>{preview.skippedItems.map((item) => <li key={item.itemId}>{item.title}</li>)}</ul>
+              <p className="mt-1 text-[13px] text-[var(--cp-text-muted)]">Deze regels blijven op je lijstje staan.</p>
+            </div>
+          )}
           <label className="flex cursor-pointer items-start gap-3 rounded-2xl bg-black/[0.04] p-3.5 dark:bg-white/[0.06]">
             <input
               type="checkbox"

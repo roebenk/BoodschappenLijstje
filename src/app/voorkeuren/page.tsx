@@ -3,12 +3,9 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { RotateCcw, X } from "lucide-react";
-import { PageHeader, Card, ProductThumb, PromoPill, StoreBadge, SyncPill, btnPrimary, btnSecondary } from "@/components/ui";
+import { PageHeader, Card, ProductThumb, StoreBadge, btnPrimary, btnSecondary } from "@/components/ui";
 import { api } from "@/hooks/api";
 import { useHouseholdSync } from "@/hooks/useHouseholdSync";
-import { formatEuro } from "@/lib/format";
-import { AI_MODELS, estimatedMonthlyCost } from "@/lib/llm/models";
 import type {
   ActiveShoppingProviderId,
   BrandPreferenceMode,
@@ -32,7 +29,6 @@ export default function VoorkeurenPage() {
   const [modes, setModes] = useState<Record<number, BrandPreferenceMode>>({});
   const [defaultProvider, setDefaultProviderState] = useState<ActiveShoppingProviderId>("ah");
   const [savingDefault, setSavingDefault] = useState(false);
-  const [savingAiModel, setSavingAiModel] = useState(false);
   const [seeding, setSeeding] = useState(false);
 
   const load = useCallback(async () => {
@@ -52,62 +48,6 @@ export default function VoorkeurenPage() {
     void load();
   }, [load]);
 
-  const addDeal = async (title: string) => {
-    try {
-      await api("/api/list", { method: "POST", body: { inputs: [title] } });
-      toast.success("Op je lijstje gezet");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Toevoegen mislukt");
-    }
-  };
-
-  const dismissDeal = async (dealKey: string | undefined, title: string) => {
-    if (!dealKey) return;
-    const prev = data;
-    setData((curr) =>
-      curr
-        ? {
-            ...curr,
-            weekDeals: curr.weekDeals.filter((d) => d.dealKey !== dealKey),
-            dismissedDealsCount: (curr.dismissedDealsCount ?? 0) + 1,
-          }
-        : curr,
-    );
-    try {
-      await api("/api/preferences", {
-        method: "PATCH",
-        body: { dismissDealKey: dealKey, dismissDealLabel: title },
-      });
-      toast("Uit weekdeals verwijderd", {
-        action: {
-          label: "Herstel",
-          onClick: () => {
-            void api("/api/preferences", {
-              method: "PATCH",
-              body: { restoreDealKey: dealKey },
-            }).then(() => load());
-          },
-        },
-      });
-    } catch (e) {
-      setData(prev);
-      toast.error(e instanceof Error ? e.message : "Verbergen mislukt");
-    }
-  };
-
-  const restoreAllDeals = async () => {
-    try {
-      await api("/api/preferences", {
-        method: "PATCH",
-        body: { restoreAllDeals: true },
-      });
-      toast.success("Verborgen weekdeals hersteld");
-      await load();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Herstellen mislukt");
-    }
-  };
-
   const changeDefaultStore = async (provider: ActiveShoppingProviderId) => {
     if (provider === defaultProvider || savingDefault) return;
     const prev = defaultProvider;
@@ -124,22 +64,6 @@ export default function VoorkeurenPage() {
       toast.error(e instanceof Error ? e.message : "Opslaan mislukt");
     } finally {
       setSavingDefault(false);
-    }
-  };
-
-  const changeAiModel = async (model: string) => {
-    if (!data?.settings || model === data.settings.aiModel || savingAiModel) return;
-    const previous = data.settings.aiModel;
-    setData((curr) => curr?.settings ? { ...curr, settings: { ...curr.settings, aiModel: model } } : curr);
-    setSavingAiModel(true);
-    try {
-      await api("/api/preferences", { method: "PATCH", body: { aiModel: model } });
-      toast.success("AI-model bijgewerkt");
-    } catch (e) {
-      setData((curr) => curr?.settings ? { ...curr, settings: { ...curr.settings, aiModel: previous } } : curr);
-      toast.error(e instanceof Error ? e.message : "Opslaan mislukt");
-    } finally {
-      setSavingAiModel(false);
     }
   };
 
@@ -173,7 +97,7 @@ export default function VoorkeurenPage() {
 
   return (
     <main className="mx-auto max-w-xl overflow-x-clip pb-safe">
-      <PageHeader title="Voorkeuren" right={<SyncPill connected={connected} />} />
+      <PageHeader title="Voorkeuren" connected={connected} />
       <div className="space-y-6 px-4 pt-2">
         {data === null && <p className="py-10 text-center text-[16px] text-black/60 dark:text-white/60">Laden…</p>}
 
@@ -211,148 +135,6 @@ export default function VoorkeurenPage() {
                   })}
                 </div>
               </Card>
-            </section>
-
-            <section>
-              <h2 className="px-1 pb-2 text-[20px] font-bold tracking-tight">AI-model</h2>
-              <Card className="p-4">
-                <p className="text-[14px] leading-snug text-black/65 dark:text-white/65">
-                  Voor zoektermen, productvergelijkingen en het indelen van kassabonnen. Bestaande resultaten blijven in de cache.
-                </p>
-                {!data.settings?.aiConfigured && (
-                  <p className="mt-2 text-[14px] text-black/65 dark:text-white/65">
-                    Stel een OpenRouter-sleutel in om AI te gebruiken.
-                  </p>
-                )}
-                {data.settings?.aiModel && !AI_MODELS.some((model) => model.id === data.settings?.aiModel) && (
-                  <p className="mt-2 text-[14px] text-black/65 dark:text-white/65">
-                    Huidig model uit configuratie: {data.settings.aiModel}
-                  </p>
-                )}
-                <div role="radiogroup" aria-label="AI-model" className="mt-3 space-y-2">
-                  {AI_MODELS.map((model) => {
-                    const active = data.settings?.aiModel === model.id;
-                    return (
-                      <button
-                        key={model.id}
-                        type="button"
-                        role="radio"
-                        aria-checked={active}
-                        disabled={savingAiModel}
-                        onClick={() => void changeAiModel(model.id)}
-                        className={`flex min-h-[56px] w-full items-center justify-between gap-3 rounded-[10px] border px-3 py-2 text-left ${
-                          active ? "border-[#007AFF] bg-[#007AFF]/10" : "border-black/10 dark:border-white/15"
-                        }`}
-                      >
-                        <span>
-                          <span className="block text-[15px] font-semibold">{model.name}</span>
-                          <span className="block text-[13px] text-black/60 dark:text-white/60">{model.description}</span>
-                        </span>
-                        <span className="shrink-0 text-[14px] font-semibold">
-                          ~${estimatedMonthlyCost(model).toFixed(3)}/mnd
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-                <p className="mt-3 text-[12px] leading-snug text-black/60 dark:text-white/60">
-                  Schatting voor 100 nieuwe zoekopdrachten per maand: per zoekopdracht een zoekuitbreiding
-                  (500 invoer- en 100 uitvoertokens) en productbeoordeling (2.000 invoer- en 200 uitvoertokens).
-                  Exclusief kassabonnen, herpogingen, reservemodel, eventuele reasoning-tokens en belastingen.
-                  Gebaseerd op gepubliceerde vanaf-tarieven; aanbieder, cache en werkelijk tokenverbruik beïnvloeden de kosten.
-                  Tarieven OpenRouter: 18 november 2026.
-                </p>
-                <p className="mt-2 text-[12px] text-black/60 dark:text-white/60">
-                  Reservemodel bij fouten: {
-                    data.settings?.aiFallbackModel && data.settings.aiFallbackModel !== data.settings.aiModel
-                      ? data.settings.aiFallbackModel
-                      : "geen"
-                  }.
-                </p>
-              </Card>
-            </section>
-
-            <section>
-              <div className="flex items-baseline justify-between gap-2 px-1 pb-2">
-                <h2 className="text-[20px] font-bold tracking-tight">Weekdeals op jouw vaste boodschappen</h2>
-              </div>
-              {data.weekDeals.length === 0 ? (
-                <Card className="p-4 text-[15px] text-black/65 dark:text-white/65">
-                  <p>
-                    {(data.dismissedDealsCount ?? 0) > 0
-                      ? "Alle huidige weekdeals zijn verborgen."
-                      : "Nog geen weekdeals gevonden. Zodra je kassabonnen zijn gesynchroniseerd zie je hier aanbiedingen."}
-                  </p>
-                  {(data.dismissedDealsCount ?? 0) > 0 && (
-                    <button
-                      type="button"
-                      data-testid="restore-all-deals"
-                      onClick={() => void restoreAllDeals()}
-                      className="mt-2 inline-flex min-h-[38px] items-center gap-1.5 text-[14px] font-semibold text-[#007AFF] dark:text-[#64B0FF]"
-                    >
-                      <RotateCcw className="h-3.5 w-3.5" />
-                      {data.dismissedDealsCount} verborgen {data.dismissedDealsCount === 1 ? "deal" : "deals"} herstellen
-                    </button>
-                  )}
-                </Card>
-              ) : (
-                <>
-                  <Card className="divide-y divide-black/[0.07] dark:divide-white/[0.09]">
-                    {data.weekDeals.map((d, i) => (
-                      <div key={d.dealKey ?? `${d.provider}-${d.title}-${i}`} className="flex items-center gap-2.5 p-3">
-                        <ProductThumb url={d.imageUrl} title={d.title} />
-                        <div className="min-w-0 flex-1">
-                          <p className="line-clamp-2 text-[16px] font-semibold leading-snug">{d.title}</p>
-                          <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                            <StoreBadge provider={d.provider} />
-                            <PromoPill>{d.promoLabel}</PromoPill>
-                            {d.priceCents !== null && <span className="text-[15px] font-bold tabular-nums">{formatEuro(d.priceCents)}</span>}
-                            {d.timesBought !== undefined && d.timesBought > 0 && (
-                              <span className="rounded-full bg-black/[0.06] px-2 py-0.5 text-[12px] font-medium tabular-nums text-black/65 dark:bg-white/10 dark:text-white/65">
-                                {d.timesBought}× gekocht
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => addDeal(d.title)}
-                            className="min-h-[40px] shrink-0 rounded-full bg-[#007AFF]/12 px-3 text-[14px] font-semibold text-[#0062CC] dark:text-[#64B0FF]"
-                          >
-                            + Lijst
-                          </button>
-                          {d.dealKey && (
-                            <button
-                              type="button"
-                              data-testid="dismiss-weekdeal"
-                              aria-label={`${d.title} verwijderen uit weekdeals`}
-                              title="Niet meer tonen in weekdeals"
-                              onClick={() => void dismissDeal(d.dealKey, d.title)}
-                              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-black/45 transition-colors hover:bg-black/[0.06] hover:text-black/75 active:bg-black/10 dark:text-white/45 dark:hover:bg-white/10 dark:hover:text-white/80"
-                            >
-                              <X className="h-4 w-4" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </Card>
-                  {(data.dismissedDealsCount ?? 0) > 0 && (
-                    <div className="mt-2 px-1 text-right">
-                      <button
-                        type="button"
-                        data-testid="restore-all-deals"
-                        onClick={() => void restoreAllDeals()}
-                        className="inline-flex min-h-[36px] items-center gap-1.5 text-[13px] font-semibold text-black/55 hover:text-[#007AFF] dark:text-white/55 dark:hover:text-[#64B0FF]"
-                      >
-                        <RotateCcw className="h-3.5 w-3.5" />
-                        {data.dismissedDealsCount} verborgen {data.dismissedDealsCount === 1 ? "deal" : "deals"} herstellen
-                      </button>
-                    </div>
-                  )}
-                </>
-              )}
             </section>
 
             <section>

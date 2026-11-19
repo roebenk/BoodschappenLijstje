@@ -5,6 +5,7 @@ import {
   findConceptBySlugs,
   getBrandLoyalty,
   getConceptById,
+  getCachedConceptMatches,
   getDefaultProvider,
   getPreferencesForProducts,
   getShoppingItem,
@@ -51,6 +52,7 @@ import type {
   ItemComparisonResult,
   ListOptimizationResult,
   ListResponse,
+  ManualProductSearchResponse,
   NormalizedStoreProduct,
   ParsedGroceryInput,
   PricedCandidate,
@@ -263,8 +265,11 @@ async function evaluateLine(
   const parsed = opts.parsedOverride ?? withQty(base, opts.qty ?? base.multiplier);
   const allowOvershoot = opts.allowOvershoot ?? base.allowOvershootDefault;
   const slug = slugifyConcept(parsed.searchQuery);
+  const remembered = getStoreProducts(
+    getCachedConceptMatches(slug, conceptSlugAliases(parsed.searchQuery))?.manualProductIds ?? [],
+  ).filter((p) => PROVIDERS.includes(p.provider as ActiveShoppingProviderId) && !p.isMockFallback).slice(0, 6);
 
-  const [ahOriginal, picnicOriginal, radarDeals, expansion] = await Promise.all([
+  const [ahOriginal, picnicOriginal, radarDeals, expansion, rememberedResults] = await Promise.all([
     safeSearch("ah", parsed.searchQuery),
     safeSearch("picnic", parsed.searchQuery),
     findRadarDeals(parsed.searchQuery),
@@ -274,13 +279,16 @@ async function evaluateLine(
       { alternatives: [], safeAlternatives: [] },
       "AI-zoekuitbreiding",
     ),
+    Promise.all(remembered.map((product) =>
+      safeSearch(product.provider as ActiveShoppingProviderId, product.title))),
   ]);
   const expanded = await Promise.all(
     expansion.alternatives.map(async (term) => Promise.all([safeSearch("ah", term), safeSearch("picnic", term)])),
   );
   const merge = (products: NormalizedStoreProduct[]) => [...new Map(products.map((p) => [p.id, p])).values()];
-  const ahRaw = merge([...ahOriginal, ...expanded.flatMap(([ah]) => ah)]);
-  const picnicRaw = merge([...picnicOriginal, ...expanded.flatMap(([, picnic]) => picnic)]);
+  const refreshed = rememberedResults.flat().filter((p) => remembered.some((known) => known.id === p.id));
+  const ahRaw = merge([...ahOriginal, ...expanded.flatMap(([ah]) => ah), ...refreshed.filter((p) => p.provider === "ah")]);
+  const picnicRaw = merge([...picnicOriginal, ...expanded.flatMap(([, picnic]) => picnic), ...refreshed.filter((p) => p.provider === "picnic")]);
   const all = [...ahRaw, ...picnicRaw];
   if (all.length > 0) upsertStoreProducts(all);
 
@@ -320,6 +328,7 @@ async function evaluateLine(
   const relevant = new Set(filtered.products.map((p) => p.id));
   const alternatives = new Set(filtered.alternativeProductIds);
   const rejected = new Set(filtered.rejectedProductIds);
+  for (const product of refreshed) relevant.add(product.id);
   // Never drop a deterministic match that the household has actually bought before.
   for (const p of all) {
     if (deterministicIds.has(p.id) && ((prefs.get(p.id)?.timesBought ?? 0) > 0 || p.previouslyBought)) {
@@ -737,9 +746,67 @@ export async function getItemComparisonDetails(
   return { ...ev.comparison, item: enrichItem(item) };
 }
 
+export async function searchProductsForItem(
+  itemId: number,
+  provider: string,
+  query: string,
+): Promise<ManualProductSearchResponse> {
+  const item = getShoppingItem(itemId);
+  if (!item) throw notFound("Item niet gevonden");
+  if (provider !== "ah" && provider !== "picnic") throw badRequest("Onbekende winkel");
+  const term = query.trim();
+  if (term.length < 2 || term.length > 100) throw badRequest("Gebruik een zoekterm van 2 tot 100 tekens");
+  let response: Awaited<ReturnType<ReturnType<typeof getProvider>["searchProducts"]>>;
+  try {
+    response = await withDeadline(
+      getProvider(provider).searchProducts({ query: term, limit: 100 }),
+      PROVIDER_SEARCH_TIMEOUT_MS[provider],
+      { products: [], isMockFallback: true, sourceNote: "Zoeken bij de winkel duurde te lang." },
+      `Handmatig zoeken bij ${provider}`,
+    );
+  } catch (error) {
+    console.warn(`Handmatig zoeken bij ${provider} mislukt:`, error);
+    response = { products: [], isMockFallback: true, sourceNote: "Zoeken bij de winkel is mislukt." };
+  }
+  const products = response.isMockFallback
+    ? searchCachedStoreProducts(provider, term, 100)
+    : response.products.filter((p) => p.provider === provider && !p.isMockFallback);
+  upsertStoreProducts(products);
+  const prefs = getPreferencesForProducts(products.map((p) => p.id));
+  return {
+    candidates: [...new Map(products.map((p) => [p.id, p])).values()].map((p) =>
+      priceCandidate(p, itemParsed(item), {
+        channel: CHANNEL[provider],
+        allowOvershoot: item.allowOvershoot,
+        timesBought: prefs.get(p.id)?.timesBought ?? 0,
+      })),
+    source: response.isMockFallback ? (products.length ? "cached" : "unavailable") : "live",
+    ...(response.isMockFallback ? {
+      message: `${response.sourceNote ?? "Geen live winkelresultaten beschikbaar."} ${
+        products.length ? "Dit zijn eerder opgeslagen producten; prijs en beschikbaarheid kunnen verouderd zijn." :
+          "Probeer het later opnieuw of controleer je winkelkoppeling."
+      }`,
+    } : {}),
+  };
+}
+
 export async function updateItem(itemId: number, patch: UpdateListItemRequest): Promise<ShoppingListItem> {
   const item = getShoppingItem(itemId);
   if (!item) throw notFound("Item niet gevonden");
+  if (patch.keepUnmatched !== undefined && typeof patch.keepUnmatched !== "boolean") {
+    throw badRequest("Ongeldige keuze voor bewaren zonder product");
+  }
+  if (patch.keepUnmatched) {
+    if (patch.chosenProduct || patch.assignedProvider !== undefined) throw badRequest("Kies een product of bewaar zonder product");
+    updateShoppingItem(itemId, {
+      assignedProvider: null, isProviderLocked: false,
+      ahProductId: null, ahQty: 0, ahTotalCents: null,
+      picnicProductId: null, picnicQty: 0, picnicTotalCents: null,
+      cheapestProductId: null, cheapestOverallCents: null, pushedToStoreAt: null,
+    });
+    emitEvent({ type: "list.changed", at: nowIso(), itemIds: [itemId] });
+    return enrichItem(getShoppingItem(itemId)!);
+  }
 
   const next: Parameters<typeof updateShoppingItem>[1] = {};
   let preferencesChanged = false;
@@ -816,13 +883,14 @@ export async function updateItem(itemId: number, patch: UpdateListItemRequest): 
     if (!PROVIDERS.includes(provider)) throw badRequest("Onbekende winkel");
     const product = getStoreProduct(productId);
     if (!product || product.provider !== provider) throw badRequest("Product niet gevonden bij deze winkel");
+    if (!product.available || product.isMockFallback) throw badRequest("Dit product is niet beschikbaar");
     const previous = provider === "ah" ? item.ahProductId : item.picnicProductId;
     if (previous && previous !== productId) recordManualReject(previous, item.conceptId);
     recordManualPick(productId, item.conceptId);
     if (provider === "ah") next.ahProductId = productId;
     else next.picnicProductId = productId;
     next.assignedProvider = provider;
-    next.isProviderLocked = true;
+    next.isProviderLocked = patch.isProviderLocked ?? item.isProviderLocked;
     preferencesChanged = true;
     needsReprice = true;
   }
@@ -909,7 +977,11 @@ function buildPreviews(providers: ActiveShoppingProviderId[]): PushListPreview[]
 export async function pushListToStores(req: PushListRequest): Promise<PushListResponse> {
   const providers = (req.providers?.length ? req.providers : PROVIDERS).filter((p) => PROVIDERS.includes(p));
   const previews = buildPreviews(providers);
-  if (req.mode !== "push") return { mode: "preview", previews };
+  const skippedItems = listShoppingItems().filter((i) => !i.isChecked &&
+    (!i.assignedProvider || (providers.includes(i.assignedProvider) &&
+      !(i.assignedProvider === "ah" ? i.ahProduct : i.picnicProduct))))
+    .map((i) => ({ itemId: i.id, title: i.displayName, reason: "Nog product kiezen" }));
+  if (req.mode !== "push") return { mode: "preview", previews, skippedItems };
 
   const autoCheck = req.autoCheckPushed !== false;
   let statsRecorded = 0;
@@ -953,5 +1025,5 @@ export async function pushListToStores(req: PushListRequest): Promise<PushListRe
   }
   emitEvent({ type: "list.changed", at: nowIso() });
   if (statsRecorded > 0) emitEvent({ type: "stats.changed", at: nowIso() });
-  return { mode: "push", previews, results };
+  return { mode: "push", previews, results, skippedItems };
 }

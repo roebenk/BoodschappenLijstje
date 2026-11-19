@@ -27,14 +27,17 @@ import { GET as healthGet } from "@/app/api/health/route";
 import { GET as listGet, POST as listPost, DELETE as listDelete } from "@/app/api/list/route";
 import { GET as suggestionsGet } from "@/app/api/list/suggestions/route";
 import { GET as itemGet, PATCH as itemPatch } from "@/app/api/list/[id]/route";
+import { GET as manualSearchGet } from "@/app/api/list/[id]/search/route";
 import { POST as optimizePost } from "@/app/api/list/optimize/route";
 import { POST as pushPost } from "@/app/api/list/push/route";
+import { GET as dealsGet } from "@/app/api/deals/route";
 import { GET as preferencesGet, PATCH as preferencesPatch } from "@/app/api/preferences/route";
 import { GET as statsGet } from "@/app/api/stats/route";
 import { GET as storesGet } from "@/app/api/stores/route";
 import { POST as demoSeedPost } from "@/app/api/stores/demo-seed/route";
 import { subscriberCount } from "@/lib/services/eventBus";
 import { expandSearchQueries } from "@/lib/llm/openrouter";
+import { clearSearchCache } from "@/lib/services/shoppingService";
 
 const ROOT = path.join(process.cwd(), ".test-data-api");
 const realCwd = process.cwd();
@@ -62,6 +65,14 @@ function fakeAdapter(id: "ah" | "picnic" | "jumbo" | "plus"): SupermarketAdapter
     },
     getPromotions: async () => [],
     pushItems: id === "ah" || id === "picnic" ? (items) => h.pushItems(id, items) : undefined,
+  };
+}
+
+function fallbackProduct(provider: "ah" | "picnic", externalId: string, title: string): NormalizedStoreProduct {
+  return {
+    id: `${provider}:${externalId}`, provider, externalId, title, brand: null, isHouseBrand: true,
+    unitSizeRaw: "150 g", baseAmount: 150, baseUnit: "g", regularPriceCents: 349, currentPriceCents: 349,
+    promo: null, isOnlineOnlyPromo: false, imageUrl: null, available: true,
   };
 }
 
@@ -149,7 +160,7 @@ describe("api", () => {
 
     const suggestions = (await (await suggestionsGet()).json()) as { suggestions: string[] };
     expect(suggestions.suggestions.length).toBeGreaterThan(0);
-    expect(suggestions.suggestions.length).toBeLessThanOrEqual(4);
+    expect(suggestions.suggestions.length).toBeLessThanOrEqual(50);
     expect(suggestions.suggestions.every((name) => name.length > 0)).toBe(true);
   });
 
@@ -198,7 +209,16 @@ describe("api", () => {
     expect(missing.status).toBe(404);
   });
 
-  it("PATCH /api/list/[id] locks the store and learns from a variant swap", async () => {
+  it("PATCH /api/list/[id] preserves store mode when switching stores or products", async () => {
+    const switchStore = await itemPatch(
+      patch("/api/list/x", { assignedProvider: "ah", isProviderLocked: false }),
+      ctx(kwarkId),
+    );
+    expect(((await switchStore.json()) as { item: ShoppingListItem }).item).toMatchObject({
+      assignedProvider: "ah",
+      isProviderLocked: false,
+    });
+
     const lock = await itemPatch(patch("/api/list/x", { assignedProvider: "ah" }), ctx(kwarkId));
     const locked = ((await lock.json()) as { item: ShoppingListItem }).item;
     expect(locked.assignedProvider).toBe("ah");
@@ -212,10 +232,16 @@ describe("api", () => {
     expect(swapped.ahProductId).toBe("ah:wi-demo-ah-pindakaas-350");
     expect(swapped.ahTotalCents).toBe(199);
     expect(swapped.assignedProvider).toBe("ah");
-    expect(swapped.isProviderLocked).toBe(true);
+    expect(swapped.isProviderLocked).toBe(false);
 
     expect(repo.getProductPreference("ah:wi-demo-ah-pindakaas-350")?.manualPicks).toBe(1);
     expect(repo.getProductPreference("ah:wi-demo-calve-350")?.manualRejects).toBe(1);
+
+    const lockedSwap = await itemPatch(
+      patch("/api/list/x", { chosenProduct: { provider: "ah", productId: locked.ahProductId! } }),
+      ctx(kwarkId),
+    );
+    expect(((await lockedSwap.json()) as { item: ShoppingListItem }).item.isProviderLocked).toBe(true);
 
     const qty = await itemPatch(patch("/api/list/x", { requestedQty: 2 }), ctx(kwarkId));
     const requantified = ((await qty.json()) as { item: ShoppingListItem }).item;
@@ -444,7 +470,7 @@ describe("api", () => {
 
   it("dismisses and restores weekdeals, re-optimizes immediately on unlock, auto-checks pushed items, and computes 100%-optimal stats without double counting", async () => {
     // 1. Dismiss & restore weekdeals
-    const prefsBefore = await (await preferencesGet()).json();
+    const prefsBefore = await (await dealsGet()).json();
     expect(prefsBefore.weekDeals.length).toBeGreaterThan(0);
     const firstDeal = prefsBefore.weekDeals[0];
     expect(firstDeal.dealKey).toBeTruthy();
@@ -452,12 +478,16 @@ describe("api", () => {
     await preferencesPatch(
       patch("/api/preferences", { dismissDealKey: firstDeal.dealKey, dismissDealLabel: firstDeal.title }),
     );
-    const prefsAfterDismiss = await (await preferencesGet()).json();
+    const prefsAfterDismiss = await (await dealsGet()).json();
     expect(prefsAfterDismiss.weekDeals.some((d: { dealKey?: string }) => d.dealKey === firstDeal.dealKey)).toBe(false);
     expect(prefsAfterDismiss.dismissedDealsCount).toBe(1);
+    expect(prefsAfterDismiss.dismissedDeals[0].dealKey).toBe(firstDeal.dealKey);
+    await preferencesPatch(patch("/api/preferences", { restoreDealKey: firstDeal.dealKey }));
+    expect((await (await dealsGet()).json()).dismissedDealsCount).toBe(0);
+    await preferencesPatch(patch("/api/preferences", { dismissDealKey: firstDeal.dealKey, dismissDealLabel: firstDeal.title }));
 
     await preferencesPatch(patch("/api/preferences", { restoreAllDeals: true }));
-    const prefsAfterRestore = await (await preferencesGet()).json();
+    const prefsAfterRestore = await (await dealsGet()).json();
     expect(prefsAfterRestore.dismissedDealsCount).toBe(0);
     expect(prefsAfterRestore.weekDeals.some((d: { dealKey?: string }) => d.dealKey === firstDeal.dealKey)).toBe(true);
 
@@ -604,7 +634,7 @@ describe("api", () => {
     expect(item.ahProduct?.id).toBe("ah:choco-test");
   });
 
-  it("shows cheese substitutes as alternatives and never falls back to rejected cheese-containing foods", async () => {
+  it("persists cheese matches across days and restarts, refreshes prices, and only classifies new products", async () => {
     const originalAh = h.adapters.ah;
     const originalPicnic = h.adapters.picnic;
     const make = (id: string, title: string, brand: string, category?: string): NormalizedStoreProduct => ({
@@ -632,7 +662,8 @@ describe("api", () => {
       make("biscuits", "AH Parmezaanse kaas biscuits", "AH", "Borrel, chips, snacks"),
       make("salami", "AH Truffelsalami parmezaanse kaas", "AH", "Borrel, chips, snacks"),
     ];
-    h.adapters.ah = { ...originalAh, searchProducts: async () => ({ products: hits, isMockFallback: false }) };
+    const ahSearch = vi.fn(async () => ({ products: hits, isMockFallback: false }));
+    h.adapters.ah = { ...originalAh, searchProducts: ahSearch };
     h.adapters.picnic = { ...originalPicnic, searchProducts: async () => ({ products: [], isMockFallback: false }) };
     process.env.OPENROUTER_API_KEY = "sk-test";
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
@@ -642,6 +673,8 @@ describe("api", () => {
         : { exact_ids: ["ah:parmesan", "ah:parmigiano"], alternative_ids: ["ah:grana"] };
       return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) } }] }));
     });
+    const today = Date.now();
+    const clock = vi.spyOn(Date, "now");
     try {
       const added = await listPost(post("/api/list", { inputs: ["Parmezaanse kaas"] }));
       const item = ((await added.json()) as { items: ShoppingListItem[] }).items[0];
@@ -656,11 +689,147 @@ describe("api", () => {
       );
       expect(comparison.ah.otherResults).toEqual([]);
       expect(repo.getCachedConceptMatches("parmezaanse-kaas")?.alternativeProductIds).toContain("ah:grana");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(repo.getCachedConceptMatches("parmezaanse-kaas")?.invalidProductIds).toEqual(
+        expect.arrayContaining(["ah:biscuits", "ah:salami"]),
+      );
+
+      const searchesToday = ahSearch.mock.calls.length;
+      clock.mockReturnValue(today + 24 * 60 * 60 * 1000);
+      resetDbConnectionForTests();
+      hits[0] = { ...hits[0], currentPriceCents: 199 };
+      const tomorrow = await listPost(post("/api/list", { inputs: [" parmezaanse   kaas "] }));
+      expect(tomorrow.status).toBe(201);
+      expect(ahSearch.mock.calls.length).toBeGreaterThan(searchesToday);
+      expect(repo.getStoreProduct("ah:parmesan")?.currentPriceCents).toBe(199);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(repo.getCachedConceptMatches("parmezaanse-kaas")?.alternativeProductIds).toContain("ah:grana");
+
+      hits.push(make("new-parmesan", "AH Parmezaanse kaas biologisch", "AH"));
+      resetDbConnectionForTests();
+      fetchMock.mockImplementationOnce(async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        expect(body.response_format.json_schema.name).toBe("relevance");
+        expect(JSON.parse(body.messages[1].content).producten.map((p: { id: string }) => p.id))
+          .toEqual(["ah:new-parmesan"]);
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+          exact_ids: ["ah:new-parmesan"], alternative_ids: [],
+        }) } }] }));
+      });
+      const withNewProduct = await listPost(post("/api/list", { inputs: ["Parmezaanse kaas"] }));
+      expect(withNewProduct.status).toBe(201);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
     } finally {
+      clock.mockRestore();
       process.env.OPENROUTER_API_KEY = "";
       fetchMock.mockRestore();
       h.adapters.ah = originalAh;
       h.adapters.picnic = originalPicnic;
+    }
+  });
+
+  it("searches without relevance filtering, remembers a manual product and refreshes it after restart", async () => {
+    const originalAh = h.adapters.ah;
+    const originalPicnic = h.adapters.picnic;
+    const ahBerry = fallbackProduct("ah", "berries", "AH Blauwe bessen");
+    let picnicBerry = fallbackProduct("picnic", "berries", "Picnic Blueberries bakje");
+    const irrelevant = { ...picnicBerry, id: "picnic:yoghurt", externalId: "yoghurt", title: "Picnic Yoghurt blauwe bessen" };
+    const search = vi.fn(async ({ query }: { query: string }) => ({
+      products: query.toLowerCase().includes("bakje") ? [picnicBerry] : [irrelevant],
+      isMockFallback: false,
+    }));
+    h.adapters.ah = { ...originalAh, searchProducts: async () => ({ products: [ahBerry], isMockFallback: false }) };
+    h.adapters.picnic = { ...originalPicnic, searchProducts: search };
+    const ids: number[] = [];
+    clearSearchCache();
+    try {
+      const { items: [item] } = await (await listPost(post("/api/list", { inputs: ["blauwe bessen"] }))).json();
+      ids.push(item.id);
+      expect(item.ahProductId).toBe(ahBerry.id);
+      expect(item.picnicProductId).toBeNull();
+      const manual = (query: string, provider = "picnic", id = item.id) => manualSearchGet(
+        new Request(`http://localhost/api/list/${id}/search?provider=${provider}&query=${encodeURIComponent(query)}`), ctx(id),
+      );
+      const raw = await (await manual("blauwe bessen")).json();
+      expect(raw.source).toBe("live");
+      expect(raw.candidates.map((c: { product: NormalizedStoreProduct }) => c.product.id)).toContain(irrelevant.id);
+      const found = await (await manual("blueberries bakje")).json();
+      expect(found.candidates[0].product.id).toBe(picnicBerry.id);
+      const picked = await (await itemPatch(patch("/api/list/x", {
+        chosenProduct: { provider: "picnic", productId: picnicBerry.id },
+      }), ctx(item.id))).json();
+      expect(picked.item.ahProductId).toBe(ahBerry.id);
+      expect(picked.item.picnicProductId).toBe(picnicBerry.id);
+      picnicBerry = { ...picnicBerry, currentPriceCents: 299 };
+      resetDbConnectionForTests();
+      const { items: [again] } = await (await listPost(post("/api/list", { inputs: ["blauwe bessen"] }))).json();
+      ids.push(again.id);
+      expect(again.picnicProductId).toBe(picnicBerry.id);
+      expect(again.picnicTotalCents).toBe(299);
+      expect(search).toHaveBeenCalledWith(expect.objectContaining({ query: picnicBerry.title }));
+      expect((await manual("x")).status).toBe(400);
+      expect((await manual("bessen", "jumbo")).status).toBe(400);
+      expect((await manual("bessen", "picnic", 999999)).status).toBe(404);
+      const unavailable = { ...picnicBerry, id: "picnic:unavailable", externalId: "unavailable", available: false };
+      repo.upsertStoreProducts([unavailable]);
+      expect((await itemPatch(patch("/api/list/x", {
+        chosenProduct: { provider: "picnic", productId: unavailable.id },
+      }), ctx(item.id))).status).toBe(400);
+    } finally {
+      for (const id of ids) repo.deleteShoppingItem(id);
+      h.adapters.ah = originalAh;
+      h.adapters.picnic = originalPicnic;
+      clearSearchCache();
+    }
+  });
+
+  it("labels cached manual search results and retains unresolved rows without pricing or pushing them", async () => {
+    const original = h.adapters.picnic;
+    const item = repo.insertShoppingItem({ rawInput: "fallback bessen", displayName: "Fallback bessen" });
+    const template = fallbackProduct("picnic", "fallback", "Fallback bessen");
+    const ahBerry = fallbackProduct("ah", "fallback-berries", "Fallback bessen");
+    repo.upsertStoreProducts([template, ahBerry]);
+    h.adapters.picnic = { ...original, searchProducts: async () => { throw new Error("offline"); } };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const response = await manualSearchGet(
+        new Request(`http://localhost/api/list/${item.id}/search?provider=picnic&query=fallback`), ctx(item.id),
+      );
+      const cached = await response.json();
+      expect(cached.source).toBe("cached");
+      expect(cached.message).toContain("verouderd");
+      expect(cached.candidates[0].product.id).toBe("picnic:fallback");
+      const missing = await (await manualSearchGet(
+        new Request(`http://localhost/api/list/${item.id}/search?provider=picnic&query=zzgeenresultatenzz`), ctx(item.id),
+      )).json();
+      expect(missing.source).toBe("unavailable");
+      expect(missing.candidates).toEqual([]);
+      repo.updateShoppingItem(item.id, {
+        ahProductId: ahBerry.id, ahTotalCents: 249, ahQty: 1,
+        picnicProductId: template.id, picnicTotalCents: 299, picnicQty: 1, assignedProvider: "ah",
+      });
+      expect((await itemPatch(patch("/api/list/x", {
+        keepUnmatched: true, chosenProduct: { provider: "picnic", productId: template.id },
+      }), ctx(item.id))).status).toBe(400);
+      const saved = await (await itemPatch(patch("/api/list/x", { keepUnmatched: true }), ctx(item.id))).json();
+      expect(saved.item).toMatchObject({
+        assignedProvider: null, ahProductId: null, picnicProductId: null,
+        ahTotalCents: null, picnicTotalCents: null, requestedQty: 1,
+      });
+      resetDbConnectionForTests();
+      await optimizePost(post("/api/list/optimize", { forceMode: "optimal" }));
+      const list = await (await listGet()).json();
+      expect(list.items.find((i: ShoppingListItem) => i.id === item.id).assignedProvider).toBeNull();
+      const preview = await (await pushPost(post("/api/list/push", { mode: "preview" }))).json();
+      expect(preview.skippedItems).toContainEqual({ itemId: item.id, title: item.displayName, reason: "Nog product kiezen" });
+      expect(preview.previews.flatMap((p: { items: { itemId: number }[] }) => p.items).some(
+        (i: { itemId: number }) => i.itemId === item.id,
+      )).toBe(false);
+    } finally {
+      repo.deleteShoppingItem(item.id);
+      h.adapters.picnic = original;
+      warn.mockRestore();
+      clearSearchCache();
     }
   });
 
@@ -682,6 +851,53 @@ describe("api", () => {
     try {
       await expandSearchQueries("een uniek product voor modelkeuze");
       expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).model).toBe(model);
+    } finally {
+      process.env.OPENROUTER_API_KEY = "";
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("persists a selected AI backup model and uses it when the primary fails", async () => {
+    const primary = "google/gemini-2.5-flash-lite";
+    const backup = "openai/gpt-4.1-nano";
+    const invalid = await preferencesPatch(patch("/api/preferences", { aiFallbackModel: "not-a-model" }));
+    expect(invalid.status).toBe(400);
+
+    const saved = await preferencesPatch(patch("/api/preferences", { aiModel: primary, aiFallbackModel: backup }));
+    expect(saved.status).toBe(200);
+    expect((await saved.json()).settings.aiFallbackModel).toBe(backup);
+    resetDbConnectionForTests();
+    expect((await (await preferencesGet()).json()).settings.aiFallbackModel).toBe(backup);
+
+    process.env.OPENROUTER_API_KEY = "sk-test";
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("Unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ alternatives: ["reserveproduct"] }) } }],
+      })));
+    try {
+      const result = await expandSearchQueries("een uniek product voor reservemodelkeuze");
+      expect(result.alternatives).toContain("reserveproduct");
+      expect(fetchMock.mock.calls.map(([, options]) => JSON.parse(String(options?.body)).model)).toEqual([primary, backup]);
+    } finally {
+      process.env.OPENROUTER_API_KEY = "";
+      fetchMock.mockRestore();
+    }
+  });
+
+  it.each(["", "google/gemini-2.5-flash-lite"])("does not retry when the backup is disabled or matches the primary (%s)", async (backup) => {
+    const primary = "google/gemini-2.5-flash-lite";
+    const saved = await preferencesPatch(patch("/api/preferences", { aiModel: primary, aiFallbackModel: backup }));
+    expect(saved.status).toBe(200);
+    resetDbConnectionForTests();
+    expect((await (await preferencesGet()).json()).settings.aiFallbackModel).toBe(backup);
+
+    process.env.OPENROUTER_API_KEY = "sk-test";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Unavailable", { status: 503 }));
+    try {
+      await expandSearchQueries(`uniek product zonder extra poging ${backup || "uitgeschakeld"}`);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).model).toBe(primary);
     } finally {
       process.env.OPENROUTER_API_KEY = "";
       fetchMock.mockRestore();

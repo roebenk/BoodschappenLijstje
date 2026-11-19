@@ -2,16 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { ExternalLink } from "lucide-react";
+import { Check, ChevronRight, ExternalLink } from "lucide-react";
 import { Sheet } from "@/components/Sheet";
-import { Card, PageHeader, StoreBadge, SyncPill, btnPrimary, btnSecondary, inputCls } from "@/components/ui";
+import { Card, PageHeader, StoreBadge, btnPrimary, btnSecondary, inputCls } from "@/components/ui";
 import { api } from "@/hooks/api";
 import { useHouseholdSync } from "@/hooks/useHouseholdSync";
 import { formatDate } from "@/lib/format";
+import { AI_MODELS, estimatedMonthlyCost } from "@/lib/llm/models";
 import type {
+  AppSettings,
   AuthFlowInput,
-  DemoSeedResponse,
-  HealthResponse,
+  PreferencesResponse,
   StoreAuthResponse,
   StoreInfo,
   StoreProviderId,
@@ -31,7 +32,9 @@ function Pill({ tone, children }: { tone: "green" | "amber" | "gray" | "red"; ch
 
 export default function WinkelsPage() {
   const [stores, setStores] = useState<StoreInfo[]>([]);
-  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [settings, setSettings] = useState<AppSettings | undefined>();
+  const [aiOpen, setAiOpen] = useState(false);
+  const [savingAiModel, setSavingAiModel] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -50,9 +53,9 @@ export default function WinkelsPage() {
 
   const load = useCallback(async () => {
     try {
-      const [s, h] = await Promise.all([api<StoresResponse>("/api/stores"), api<HealthResponse>("/api/health")]);
+      const [s, p] = await Promise.all([api<StoresResponse>("/api/stores"), api<PreferencesResponse>("/api/preferences")]);
       setStores(s.stores);
-      setHealth(h);
+      setSettings(p.settings);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Laden mislukt");
     } finally {
@@ -104,6 +107,22 @@ export default function WinkelsPage() {
       void load();
     });
 
+  const changeAiModel = async (key: "aiModel" | "aiFallbackModel", model: string) => {
+    if (!settings || model === settings[key] || savingAiModel) return;
+    const previous = settings[key];
+    setSettings((current) => current ? { ...current, [key]: model } : current);
+    setSavingAiModel(true);
+    try {
+      await api("/api/preferences", { method: "PATCH", body: { [key]: model } });
+      toast.success(key === "aiModel" ? "AI-model bijgewerkt" : "Reservemodel bijgewerkt");
+    } catch (e) {
+      setSettings((current) => current ? { ...current, [key]: previous } : current);
+      toast.error(e instanceof Error ? e.message : "Opslaan mislukt");
+    } finally {
+      setSavingAiModel(false);
+    }
+  };
+
   const ahStatus = () => {
     const s = ah?.auth.status;
     if (s === "authenticated") return <Pill tone="green">Gekoppeld</Pill>;
@@ -120,7 +139,7 @@ export default function WinkelsPage() {
 
   return (
     <main className="mx-auto max-w-xl overflow-x-clip pb-safe">
-      <PageHeader title="Winkels" right={<SyncPill connected={connected} />} />
+      <PageHeader title="Winkels" connected={connected} />
       <div className="space-y-4 px-4 pt-2">
         {!loaded && <p className="py-10 text-center text-[16px] text-black/60 dark:text-white/60">Laden…</p>}
 
@@ -134,7 +153,7 @@ export default function WinkelsPage() {
           </div>
           <p className="text-[14px] text-black/65 dark:text-white/65">Laatste sync: {formatDate(ah?.auth.lastSyncedAt)}</p>
           {ah?.auth.status === "authenticated" ? (
-            <div className="flex flex-col gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <button disabled={!!busy} onClick={() => sync("ah")} className={btnPrimary}>
                 {busy === "ah-sync" ? "Synchroniseren…" : "Synchroniseer kassabonnen"}
               </button>
@@ -159,7 +178,7 @@ export default function WinkelsPage() {
           </div>
           <p className="text-[14px] text-black/65 dark:text-white/65">Laatste sync: {formatDate(picnic?.auth.lastSyncedAt)}</p>
           {picnic?.auth.status === "authenticated" ? (
-            <div className="flex flex-col gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <button disabled={!!busy} onClick={() => sync("picnic")} className={btnPrimary}>
                 {busy === "picnic-sync" ? "Synchroniseren…" : "Synchroniseer bezorgingen"}
               </button>
@@ -174,20 +193,26 @@ export default function WinkelsPage() {
           )}
         </Card>
 
-        <Card className="space-y-2 p-4">
-          <div className="flex items-start justify-between gap-2">
-            <p className="text-[17px] font-semibold">Slimme AI Matcher</p>
-            {health?.openRouter.configured ? <Pill tone="green">Actief</Pill> : <Pill tone="amber">Sleutel nog niet ingesteld (tekst-filter actief)</Pill>}
-          </div>
-          {health?.openRouter.configured ? (
-            <p className="text-[14px] text-black/70 dark:text-white/70">
-              Model: <span className="font-medium">{health.openRouter.defaultModel}</span> · ~€0,05/mnd + SQLite cache
-            </p>
-          ) : (
-            <p className="text-[14px] text-black/70 dark:text-white/70">
-              Zet <code className="rounded bg-black/[0.06] px-1 dark:bg-white/10">OPENROUTER_API_KEY</code> in je <code className="rounded bg-black/[0.06] px-1 dark:bg-white/10">.env</code>. Die wordt live opgepikt, zonder herstart.
-            </p>
-          )}
+        <Card>
+          <button
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded={aiOpen}
+            disabled={!settings}
+            onClick={() => setAiOpen(true)}
+            className="w-full space-y-2 p-4 text-left active:bg-black/[0.04] dark:active:bg-white/[0.06]"
+          >
+            <span className="flex items-start justify-between gap-2">
+              <span className="text-[17px] font-semibold">Slimme AI Matcher</span>
+              {settings?.aiConfigured ? <Pill tone="green">Actief</Pill> : <Pill tone="amber">Sleutel nog niet ingesteld (tekst-filter actief)</Pill>}
+            </span>
+            <span className="flex items-center justify-between gap-2 text-[14px] text-black/70 dark:text-white/70">
+              <span className="min-w-0 break-words">
+                {settings ? <>Model: <span className="font-medium">{settings.aiModel}</span> · SQLite cache</> : "Laden…"}
+              </span>
+              <ChevronRight aria-hidden="true" className="h-5 w-5 shrink-0 text-black/35 dark:text-white/35" />
+            </span>
+          </button>
         </Card>
 
         <Card className="space-y-3 p-4">
@@ -212,24 +237,101 @@ export default function WinkelsPage() {
             );
           })}
         </Card>
-
-        <Card className="space-y-2 p-4">
-          <p className="text-[17px] font-semibold">Test- &amp; demodata</p>
-          <p className="text-[14px] text-black/70 dark:text-white/70">Laad voorbeeld-kassabonnen om geleerde voorkeuren en loyaliteit meteen te zien.</p>
-          <button
-            data-testid="seed-demo-btn"
-            disabled={!!busy}
-            onClick={() =>
-              run("seed", () => api<DemoSeedResponse>("/api/stores/demo-seed", { method: "POST" }), (r) =>
-                toast.success(`${r.historyEntries} regels, ${r.products} producten, ${r.preferences} voorkeuren geladen`),
-              )
-            }
-            className={btnSecondary}
-          >
-            {busy === "seed" ? "Laden…" : "Laad voorbeeld-kassabonnen"}
-          </button>
-        </Card>
       </div>
+
+      <Sheet open={aiOpen} onOpenChange={setAiOpen} title="Slimme AI Matcher" description="Kies je AI-model">
+        <Card className="p-4">
+          <p className="text-[14px] leading-snug text-black/65 dark:text-white/65">
+            Voor zoektermen, productvergelijkingen en het indelen van kassabonnen. Bestaande resultaten blijven in de cache.
+          </p>
+          {!settings?.aiConfigured && (
+            <p className="mt-2 text-[14px] text-black/65 dark:text-white/65">
+              Zet <code className="rounded bg-black/[0.06] px-1 dark:bg-white/10">OPENROUTER_API_KEY</code> in je <code className="rounded bg-black/[0.06] px-1 dark:bg-white/10">.env</code>. Die wordt live opgepikt, zonder herstart.
+            </p>
+          )}
+          {settings?.aiModel && !AI_MODELS.some((model) => model.id === settings.aiModel) && (
+            <p className="mt-2 text-[14px] text-black/65 dark:text-white/65">
+              Huidig model uit configuratie: {settings.aiModel}
+            </p>
+          )}
+          <div role="radiogroup" aria-label="AI-model" className="mt-3 space-y-2">
+            {AI_MODELS.map((model) => {
+              const active = settings?.aiModel === model.id;
+              return (
+                <button
+                  key={model.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  disabled={!settings || savingAiModel}
+                  onClick={() => void changeAiModel("aiModel", model.id)}
+                  className={`flex min-h-[56px] w-full items-center justify-between gap-3 rounded-[10px] border px-3 py-2 text-left ${
+                    active ? "border-[#007AFF] bg-[#007AFF]/10" : "border-black/10 dark:border-white/15"
+                  }`}
+                >
+                  <span className="min-w-0">
+                    <span className="block text-[15px] font-semibold">{model.name}</span>
+                    <span className="block text-[13px] text-black/60 dark:text-white/60">{model.description}</span>
+                  </span>
+                  <span className="shrink-0 text-[14px] font-semibold">
+                    ~${estimatedMonthlyCost(model).toFixed(3)}/mnd
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-3 text-[12px] leading-snug text-black/60 dark:text-white/60">
+            Schatting voor 100 nieuwe zoekopdrachten per maand: per zoekopdracht een zoekuitbreiding
+            (500 invoer- en 100 uitvoertokens) en productbeoordeling (2.000 invoer- en 200 uitvoertokens).
+            Exclusief kassabonnen, herpogingen, reservemodel, eventuele reasoning-tokens en belastingen.
+            Gebaseerd op gepubliceerde vanaf-tarieven; aanbieder, cache en werkelijk tokenverbruik beïnvloeden de kosten.
+            Tarieven OpenRouter: 18 november 2026.
+          </p>
+          <fieldset
+            disabled={!settings || savingAiModel}
+            aria-describedby="ai-fallback-description"
+            className="mt-4 min-w-0"
+          >
+            <legend className="text-[15px] font-semibold">Reservemodel bij fouten</legend>
+            <div className="mt-2 overflow-hidden rounded-[10px] border border-[var(--cp-border)] bg-[var(--cp-surface)]">
+              {[
+                { id: "", name: "Geen reservemodel" },
+                ...(settings?.aiFallbackModel && !AI_MODELS.some((model) => model.id === settings.aiFallbackModel)
+                  ? [{ id: settings.aiFallbackModel, name: `${settings.aiFallbackModel} (configuratie)` }]
+                  : []),
+                ...AI_MODELS,
+              ].map((model) => (
+                <label
+                  key={model.id}
+                  className="relative flex min-h-[48px] cursor-pointer items-center gap-3 border-b border-[var(--cp-border)] px-3 last:border-b-0 active:bg-[var(--cp-surface-soft)] has-[:disabled]:cursor-default has-[:disabled]:opacity-50"
+                >
+                  <input
+                    type="radio"
+                    name="ai-fallback-model"
+                    value={model.id}
+                    checked={(settings?.aiFallbackModel ?? "") === model.id}
+                    onChange={() => void changeAiModel("aiFallbackModel", model.id)}
+                    className="peer sr-only"
+                  />
+                  <span className="pointer-events-none absolute inset-0 peer-focus-visible:rounded-[4px] peer-focus-visible:outline-2 peer-focus-visible:-outline-offset-2 peer-focus-visible:outline-[var(--cp-accent)]" />
+                  <span className="min-w-0 flex-1 break-words py-3 text-[16px] text-[var(--cp-text)]">{model.name}</span>
+                  <Check
+                    aria-hidden="true"
+                    className="h-5 w-5 shrink-0 text-[var(--cp-accent)] opacity-0 peer-checked:opacity-100"
+                    strokeWidth={2.5}
+                  />
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <p id="ai-fallback-description" className="mt-2 text-[12px] leading-snug text-black/60 dark:text-white/60">
+            Wordt alleen gebruikt als het hoofdmodel faalt. Kies een ander model dan het hoofdmodel voor een extra poging.
+          </p>
+        </Card>
+        <button type="button" onClick={() => setAiOpen(false)} className={`${btnSecondary} mt-3 w-full`}>
+          Gereed
+        </button>
+      </Sheet>
 
       <Sheet open={ahOpen} onOpenChange={setAhOpen} title="Koppel Albert Heijn" description="Inloggen in 2 stappen">
         <div className="space-y-4">

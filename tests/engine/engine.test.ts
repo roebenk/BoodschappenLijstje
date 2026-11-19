@@ -366,6 +366,32 @@ describe("search query expansion", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("refreshes search expansions at the 30-day expiry boundary", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-test";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+        alternatives: ["Parmigiano Reggiano"],
+      }) } }] })),
+    );
+    await expandSearchQueries("Parmezaanse kaas");
+    const row = getDb().prepare("SELECT updated_at FROM search_query_expansions WHERE query = ?")
+      .get("parmezaanse kaas") as { updated_at: string };
+    const expiresAt = Date.parse(row.updated_at) + 30 * 24 * 60 * 60 * 1000;
+    const clock = vi.spyOn(Date, "now");
+    try {
+      resetDbConnectionForTests();
+      clock.mockReturnValue(expiresAt - 1);
+      await expandSearchQueries(" PARMEZAANSE   KAAS ");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      clock.mockReturnValue(expiresAt);
+      await expandSearchQueries("Parmezaanse kaas");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("does not cache failed AI calls and does not trust AI-only alternatives during deterministic fallback", async () => {
     process.env.OPENROUTER_API_KEY = "sk-test";
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("error", { status: 500 }));
@@ -400,6 +426,22 @@ describe("search query expansion", () => {
 });
 
 describe("OpenRouter concept cache", () => {
+  it("expands blueberry spellings and excludes berry-flavoured foods, including old AI matches but not manual choices", async () => {
+    const expansion = await expandSearchQueries("biologische blauwe bessen");
+    expect(expansion.safeAlternatives).toEqual(["biologische blauwe bes", "biologische blueberries"]);
+    const berries = product("ah:berry-fruit", { title: "AH Blauwe bessen" });
+    const yoghurt = product("ah:berry-yoghurt", { title: "AH Yoghurt blauwe bessen" });
+    const muffin = product("ah:berry-muffin", { title: "AH Blauwe bessen muffins" });
+    expect(filterRelevantProductsDeterministic("blauwe bessen", [berries, yoghurt, muffin])).toEqual([berries]);
+    expect(filterRelevantProductsDeterministic("yoghurt blauwe bessen", [yoghurt])).toEqual([yoghurt]);
+    repo.upsertStoreProducts([berries, yoghurt, muffin]);
+    const concept = repo.upsertConcept({ slug: "blauwe-bessen", name: "Blauwe bessen", baseUnit: "g" });
+    repo.linkConceptToProduct(concept.id, yoghurt.id, true, "llm");
+    expect((await filterRelevantProducts("blauwe bessen", [berries, yoghurt])).products).toEqual([berries]);
+    repo.recordManualPick(yoghurt.id, concept.id);
+    expect((await filterRelevantProducts("blauwe bessen", [yoghurt])).products).toEqual([yoghurt]);
+  });
+
   const hits = [
     product("ah:1", { title: "AH Magere kwark" }),
     product("ah:2", { title: "AH Magere kwark aardbei" }),

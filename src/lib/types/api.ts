@@ -7,7 +7,7 @@ import type {
   StoreChannel,
   StoreProviderId,
 } from "./domain";
-import type { ListOptimizationResult, PicnicThresholdAdvice } from "./engine";
+import type { ListOptimizationResult, PicnicThresholdAdvice, PricedCandidate } from "./engine";
 import type {
   AdapterCapabilities,
   AuthFlowInput,
@@ -58,6 +58,8 @@ export interface AddListItemsResponse {
 
 /** PATCH /api/list/[id] */
 export interface UpdateListItemRequest {
+  /** Clear product choices, retaining the original line for later selection. */
+  keepUnmatched?: boolean;
   isChecked?: boolean;
   /** Switch store; sets isProviderLocked. */
   assignedProvider?: ActiveShoppingProviderId;
@@ -72,6 +74,12 @@ export interface UpdateListItemRequest {
 }
 export interface UpdateListItemResponse {
   item: ShoppingListItem;
+}
+
+export interface ManualProductSearchResponse {
+  candidates: PricedCandidate[];
+  source: "live" | "cached" | "unavailable";
+  message?: string;
 }
 
 /** DELETE /api/list/[id] -> { ok: true }; DELETE /api/list?checked=1 clears checked items */
@@ -104,6 +112,7 @@ export interface PushListResponse {
   mode: "preview" | "push";
   previews: PushListPreview[];
   results?: PushListResult[];
+  skippedItems?: Array<{ itemId: number; title: string; reason: string }>;
 }
 
 /** GET /api/stores */
@@ -152,9 +161,14 @@ export interface AppSettings {
 
 export interface PreferencesResponse {
   preferences: PreferenceView[];
-  weekDeals: RadarDeal[];
-  dismissedDealsCount?: number;
   settings?: AppSettings;
+}
+
+/** GET /api/deals */
+export interface DealsResponse {
+  weekDeals: RadarDeal[];
+  dismissedDeals: Array<{ dealKey: string; label: string | null }>;
+  dismissedDealsCount: number;
 }
 
 /** PATCH /api/preferences */
@@ -164,6 +178,7 @@ export interface UpdateConceptPreferenceRequest {
   pinnedBrand?: string | null;
   defaultProvider?: ActiveShoppingProviderId;
   aiModel?: string;
+  aiFallbackModel?: string;
   dismissDealKey?: string;
   dismissDealLabel?: string | null;
   restoreDealKey?: string;

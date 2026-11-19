@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   title: "Boodschappen",
   description: "Slim boodschappenlijstje met AH & Picnic prijsvergelijking",
   applicationName: "Boodschappen",
-  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Boodschappen" },
+  appleWebApp: { capable: true, statusBarStyle: "default", title: "Boodschappen" },
   other: { "apple-mobile-web-app-capable": "yes" },
   icons: {
     icon: [
@@ -32,11 +32,23 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="nl">
+    <html lang="nl" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: `(() => {
+          const param = new URLSearchParams(window.location.search).get("scoutTheme");
+          const theme = param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+          document.documentElement.setAttribute("data-theme", theme);
+        })();` }} />
+      </head>
       <body className="min-h-screen overflow-x-clip antialiased">
         <div
           aria-hidden="true"
           className="pointer-events-none fixed inset-x-0 top-0 z-40 h-[env(safe-area-inset-top,0px)] bg-[var(--canvas)]"
+        />
+        {/* Real element (not a pseudo-element): iOS samples its background for the status bar colour */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none fixed inset-x-0 top-0 z-40 h-px bg-[var(--canvas)]"
         />
         <div vaul-drawer-wrapper="" className="min-h-screen overflow-x-clip">
           {children}

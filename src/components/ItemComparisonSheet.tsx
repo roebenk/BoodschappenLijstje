@@ -2,14 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Check, ChevronDown, ChevronUp, Lock, LockOpen, Minus, Plus, Sparkles, Star, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Lock, Minus, Plus, Sparkles, Star, Trash2 } from "lucide-react";
 import { Sheet } from "./Sheet";
-import { Card, ProductThumb, PromoPill, StoreBadge, btnSecondary } from "./ui";
+import { Card, ProductThumb, PromoPill, StoreBadge } from "./ui";
 import { api } from "@/hooks/api";
 import { formatAmount, formatEuro, isTieredPromo, promoBadge } from "@/lib/format";
 import type {
   ActiveShoppingProviderId,
   ItemComparisonResult,
+  ManualProductSearchResponse,
   NormalizedStoreProduct,
   PricedCandidate,
   ShoppingListItem,
@@ -47,6 +48,12 @@ export function ItemComparisonSheet({
   const busy = removing || patchPending;
   const [tab, setTab] = useState<ActiveShoppingProviderId>("ah");
   const [showOther, setShowOther] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualQuery, setManualQuery] = useState("");
+  const [manualResults, setManualResults] = useState<ManualProductSearchResponse | null>(null);
+  const [manualLoading, setManualLoading] = useState(false);
+  const [manualError, setManualError] = useState<string | null>(null);
+  const manualReadVersion = useRef(0);
   const initializedForId = useRef<number | null>(null);
   const detailReadVersion = useRef(0);
 
@@ -70,6 +77,15 @@ export function ItemComparisonSheet({
   }, []);
 
   useEffect(() => {
+    ++manualReadVersion.current;
+    setManualOpen(false);
+    setManualQuery("");
+    setManualResults(null);
+    setManualError(null);
+    setManualLoading(false);
+  }, [itemId, tab]);
+
+  useEffect(() => {
     if (itemId === null) {
       setData(null);
       initializedForId.current = null;
@@ -85,8 +101,28 @@ export function ItemComparisonSheet({
     const version = detailReadVersion.current;
     if (!(await onPatch(itemId, body))) return;
     if (message) toast.success(message);
-    if (version === detailReadVersion.current && body.isProviderLocked === undefined) {
+    if (version === detailReadVersion.current && (body.isProviderLocked === undefined || body.chosenProduct)) {
       void load(itemId);
+    }
+  };
+
+  const searchManually = async () => {
+    if (itemId === null || manualQuery.trim().length < 2) return;
+    const version = ++manualReadVersion.current;
+    setManualLoading(true);
+    setManualResults(null);
+    setManualError(null);
+    try {
+      const result = await api<ManualProductSearchResponse>(
+        `/api/list/${itemId}/search?provider=${tab}&query=${encodeURIComponent(manualQuery.trim())}`,
+      );
+      if (version === manualReadVersion.current) setManualResults(result);
+    } catch (error) {
+      if (version === manualReadVersion.current) {
+        setManualError(error instanceof Error ? error.message : "Zoeken mislukt");
+      }
+    } finally {
+      if (version === manualReadVersion.current) setManualLoading(false);
     }
   };
 
@@ -206,11 +242,11 @@ export function ItemComparisonSheet({
             </span>
           ) : (
             <button
-              disabled={busy}
-              onClick={() => patch({ chosenProduct: { provider: tab, productId: c.product.id } }, "Voorkeur bijgewerkt!")}
+              disabled={busy || !c.product.available || c.product.isMockFallback}
+              onClick={() => patch({ chosenProduct: { provider: tab, productId: c.product.id }, isProviderLocked: item?.isProviderLocked ?? false }, "Voorkeur bijgewerkt!")}
               className="min-h-[44px] shrink-0 rounded-full bg-[#007AFF] px-3.5 text-[14px] font-semibold text-white active:opacity-80 dark:bg-[#0A84FF]"
             >
-              Kies deze
+              {c.product.available ? "Kies deze" : "Niet beschikbaar"}
             </button>
           )}
         </div>
@@ -272,13 +308,15 @@ export function ItemComparisonSheet({
               const allForStore = ev
                 ? [ev.winner, ...ev.alternatives, ...(ev.otherResults ?? [])].filter((c): c is PricedCandidate => !!c)
                 : [];
-              const activeCand = allForStore.find((c) => c.product.id === selectedId(p)) ?? ev?.winner ?? null;
+              const activeCand = selectedId(p)
+                ? allForStore.find((c) => c.product.id === selectedId(p)) ?? null
+                : ev?.winner ?? null;
               const fallbackProduct = p === "ah" ? item.ahProduct : item.picnicProduct;
               const fallbackTotal = p === "ah" ? item.ahTotalCents : item.picnicTotalCents;
               const fallbackQty = p === "ah" ? item.ahQty : item.picnicQty;
-              const displayProd = activeCand?.product ?? fallbackProduct ?? null;
-              const displayTotal = activeCand ? activeCand.effectiveTotalCents : fallbackTotal;
-              const displayPacks = activeCand ? activeCand.packsNeeded : Math.max(1, fallbackQty || 1);
+              const displayProd = fallbackProduct ?? activeCand?.product ?? null;
+              const displayTotal = fallbackProduct ? fallbackTotal : activeCand?.effectiveTotalCents ?? null;
+              const displayPacks = fallbackProduct ? Math.max(1, fallbackQty || 1) : activeCand?.packsNeeded ?? 1;
 
               const rec = data?.recommendedProvider === p;
               const isAssigned = item.assignedProvider === p;
@@ -355,7 +393,9 @@ export function ItemComparisonSheet({
                         disabled={busy}
                         onClick={(e) => {
                           e.stopPropagation();
-                          void patch({ assignedProvider: p, isProviderLocked: true });
+                          void patch(fallbackProduct
+                            ? { assignedProvider: p, isProviderLocked: item.isProviderLocked }
+                            : { chosenProduct: { provider: p, productId: displayProd.id }, isProviderLocked: item.isProviderLocked });
                         }}
                         className="rounded-full bg-[#007AFF]/12 px-2.5 py-1 text-[11.5px] font-bold text-[#0062CC] active:opacity-75 dark:bg-[#0A84FF]/22 dark:text-[#64B0FF]"
                       >
@@ -366,6 +406,54 @@ export function ItemComparisonSheet({
                 </Card>
               );
             })}
+          </div>
+
+          <div className="space-y-3 rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface)] p-3.5 text-[var(--cp-text)]"
+            style={{ fontFamily: '"Segoe UI", Aptos, Calibri, sans-serif' }}>
+            <button type="button" className="min-h-[44px] w-full text-left text-[15px] font-semibold text-[var(--cp-accent)]"
+              onClick={() => {
+                setManualOpen((value) => !value);
+                if (!manualQuery) setManualQuery(parsed?.searchQuery ?? item.displayName);
+              }}>
+              Niet het juiste product? Zelf zoeken bij {tab === "ah" ? "AH" : "Picnic"}
+            </button>
+            {manualOpen && (
+              <div className="space-y-3">
+                <p className="text-[13px] text-[var(--cp-text-muted)]">
+                  Zoek rechtstreeks bij deze winkel, zonder onze relevantiefilter. Je keuze wordt onthouden.
+                </p>
+                <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); void searchManually(); }}>
+                  <input aria-label="Zelf zoeken naar product" value={manualQuery} maxLength={100}
+                    onChange={(event) => {
+                      ++manualReadVersion.current;
+                      setManualQuery(event.target.value);
+                      setManualResults(null);
+                      setManualError(null);
+                      setManualLoading(false);
+                    }}
+                    className="min-w-0 flex-1 rounded-[10px] border border-[var(--cp-border)] bg-[var(--cp-bg)] p-2 text-[16px]" />
+                  <button type="submit" disabled={manualLoading || manualQuery.trim().length < 2}
+                    className="min-h-[44px] rounded-[10px] bg-[var(--cp-accent)] px-3 font-semibold text-[var(--cp-accent-fg)] disabled:opacity-50">
+                    {manualLoading ? "Zoeken..." : "Zoek"}
+                  </button>
+                </form>
+                {manualError && <p role="alert" className="text-[var(--cp-danger)]">{manualError}</p>}
+                {manualResults?.message && <p role="status" className="text-[13px] text-[var(--cp-text-muted)]">{manualResults.message}</p>}
+                {manualResults?.source === "live" && <p className="text-[13px] text-[var(--cp-text-muted)]">Winkelresultaten zonder relevantiefilter</p>}
+                {manualResults && manualResults.candidates.length === 0 && (
+                  <p role="status" className="text-[14px]">Geen producten gevonden. Probeer een andere zoekterm of bewaar zonder product.</p>
+                )}
+                {manualResults && manualResults.candidates.length > 0 && (
+                  <Card>{manualResults.candidates.map((candidate) => renderCandidateRow(candidate, false))}</Card>
+                )}
+                <button type="button" disabled={busy}
+                  onClick={() => void patch({ keepUnmatched: true }, "Bewaard: nog product kiezen")}
+                  className="min-h-[44px] text-left text-[14px] font-semibold text-[var(--cp-accent)]">
+                  Bewaar zonder product
+                </button>
+                <p className="text-[12px] text-[var(--cp-text-muted)]">Verwijdert de huidige productkeuzes bij beide winkels. De regel blijft op je lijstje.</p>
+              </div>
+            )}
           </div>
 
           {(item.loyaltyNote || item.radarDeals.length > 0) && (
@@ -450,7 +538,7 @@ export function ItemComparisonSheet({
                   </p>
                   <button
                     disabled={busy}
-                    onClick={() => patch({ chosenProduct: { provider, productId: cand.product.id } }, "Voorkeur bijgewerkt!")}
+                    onClick={() => patch({ chosenProduct: { provider, productId: cand.product.id }, isProviderLocked: item.isProviderLocked }, "Voorkeur bijgewerkt!")}
                     className="mt-2 min-h-[38px] rounded-xl bg-[#34C759] px-3.5 text-[14px] font-semibold text-white active:opacity-80"
                   >
                     Wissel naar huismerk
@@ -497,43 +585,40 @@ export function ItemComparisonSheet({
                 />
               </button>
             </div>
-            <div className="flex min-h-[50px] items-center justify-between gap-3 px-4 py-2">
-              <div className="min-w-0">
-                <p className="text-[14.5px] leading-snug">
-                  {item.isProviderLocked
-                    ? `Winkel vastgezet op ${item.assignedProvider === "picnic" ? "Picnic" : "Albert Heijn"}`
-                    : "Automatisch voordeligste winkel"}
-                </p>
-                <p className="text-[12px] text-black/55 dark:text-white/55">
-                  {item.isProviderLocked
-                    ? "Blijft bij deze winkel, ook bij optimaliseren"
-                    : "Kan automatisch naar een andere winkel verplaatsen"}
-                </p>
+            <div className="space-y-2.5 px-4 py-3">
+              <p id="store-mode-label" className="text-[14.5px] font-semibold">Winkelkeuze</p>
+              <div role="group" aria-labelledby="store-mode-label" className="flex rounded-[10px] bg-black/[0.06] p-0.5 dark:bg-white/10">
+                {(["auto", "ah", "picnic"] as const).map((mode) => {
+                  const selected = mode === "auto"
+                    ? !item.isProviderLocked
+                    : item.isProviderLocked && item.assignedProvider === mode;
+                  return (
+                    <button
+                      key={mode}
+                      type="button"
+                      aria-pressed={selected}
+                      disabled={busy}
+                      onClick={() => {
+                        if (selected) return;
+                        void patch(mode === "auto"
+                          ? { isProviderLocked: false }
+                          : { assignedProvider: mode, isProviderLocked: true });
+                      }}
+                      className={`inline-flex min-h-[44px] min-w-0 flex-1 items-center justify-center gap-1 rounded-[8px] px-2 text-[13px] font-semibold transition-all disabled:opacity-45 ${
+                        selected ? "bg-white shadow-sm dark:bg-[#636366]" : "text-black/60 dark:text-white/65"
+                      }`}
+                    >
+                      {mode !== "auto" && <Lock aria-hidden="true" className="h-3 w-3 shrink-0" />}
+                      {mode === "auto" ? "Auto" : mode === "ah" ? "Albert Heijn" : "Picnic"}
+                    </button>
+                  );
+                })}
               </div>
-              <button
-                type="button"
-                disabled={busy || !item.assignedProvider}
-                onClick={() =>
-                  patch(item.isProviderLocked || !item.assignedProvider
-                    ? { isProviderLocked: false }
-                    : { assignedProvider: item.assignedProvider, isProviderLocked: true })
-                }
-                className={`inline-flex min-h-[34px] shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] font-semibold ${
-                  item.isProviderLocked
-                    ? "bg-[#FF9500]/16 text-[#B25E00] dark:bg-[#FF9F0A]/22 dark:text-[#FFB340]"
-                    : "bg-black/[0.06] text-black/70 dark:bg-white/10 dark:text-white/75"
-                }`}
-              >
-                {item.isProviderLocked ? (
-                  <>
-                    <Lock className="h-3.5 w-3.5" /> Ontgrendel
-                  </>
-                ) : (
-                  <>
-                    <LockOpen className="h-3.5 w-3.5" /> Zet vast
-                  </>
-                )}
-              </button>
+              <p aria-live="polite" className="text-[12px] text-black/55 dark:text-white/55">
+                {item.isProviderLocked
+                  ? `Vastgezet op ${item.assignedProvider === "picnic" ? "Picnic" : "Albert Heijn"}, ook bij optimaliseren.`
+                  : "Automatisch de voordeligste winkel bij optimaliseren."}
+              </p>
             </div>
           </Card>
         </div>

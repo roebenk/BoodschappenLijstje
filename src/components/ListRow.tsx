@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, ChevronRight, Lock, TrendingDown } from "lucide-react";
+import { Check, ChevronRight, Trash2, TrendingDown } from "lucide-react";
 import { animate, motion, useMotionValue, useReducedMotion, useTransform } from "motion/react";
 import { useRef, useState, type MouseEvent } from "react";
 import { ProductThumb, PromoPill } from "./ui";
@@ -141,11 +141,8 @@ export function ListRow({
   };
 
   const handleStoreTap = (target: ActiveShoppingProviderId) => {
-    if (provider === target && item.isProviderLocked) {
-      onPatch(item.id, { isProviderLocked: false });
-      return;
-    }
-    onPatch(item.id, { assignedProvider: target, isProviderLocked: true });
+    if (provider === target) return;
+    onPatch(item.id, { assignedProvider: target, isProviderLocked: item.isProviderLocked });
   };
 
   if (item.isChecked) {
@@ -164,7 +161,7 @@ export function ListRow({
           style={{ opacity: deleteBackgroundOpacity }}
           className="absolute inset-y-0 right-0 flex w-[92px] flex-col items-center justify-center gap-1 bg-[#FF3B30] text-[12px] font-semibold text-white"
         >
-          <span className="text-[20px] leading-none">−</span>
+          <Trash2 className="h-5 w-5" />
           Verwijder
         </motion.button>
 
@@ -216,7 +213,6 @@ export function ListRow({
 
   const renderStoreSegment = (p: ActiveShoppingProviderId, label: string, activeCls: string) => {
     const isActive = provider === p;
-    const isLockedHere = isActive && item.isProviderLocked;
     const hasMatch = p === "ah" ? !!item.ahProduct : !!item.picnicProduct;
     const cheaperHere = !isActive && savingElsewhere > 0;
     return (
@@ -228,10 +224,8 @@ export function ListRow({
         title={
           cheaperHere
             ? `Goedkoper bij ${label}: ${formatEuro(savingElsewhere)} minder`
-            : isLockedHere
-            ? `Vastgezet op ${label} — tik nogmaals om te ontgrendelen`
             : isActive
-              ? `Vastzetten op ${label}`
+              ? `Huidige winkel: ${label}`
               : `Wissel naar ${label}`
         }
         onClick={() => handleStoreTap(p)}
@@ -245,7 +239,6 @@ export function ListRow({
               : "text-black/30 dark:text-white/30"
         }`}
       >
-        {isLockedHere && <Lock className="h-2.5 w-2.5 shrink-0" strokeWidth={2.6} />}
         {cheaperHere && <TrendingDown data-testid="cheaper-here" className="h-3 w-3 shrink-0" strokeWidth={2.6} />}
         <span>{label}</span>
       </button>
@@ -270,7 +263,7 @@ export function ListRow({
         style={{ opacity: deleteBackgroundOpacity }}
         className="absolute inset-y-0 right-0 flex w-[92px] flex-col items-center justify-center gap-1 bg-[#FF3B30] text-[12px] font-semibold text-white"
       >
-        <span className="text-[20px] leading-none">−</span>
+        <Trash2 className="h-5 w-5" />
         Verwijder
       </motion.button>
 
@@ -332,7 +325,7 @@ export function ListRow({
                 {sizeLabel ? (
                   <span>{sizeLabel}</span>
                 ) : !product ? (
-                  <span className="text-[#FF9500]">Geen product gevonden</span>
+                  <span className="text-[#FF9500]">Nog product kiezen</span>
                 ) : null}
                 {promoText &&
                   (promoIsTiered ? (
@@ -375,7 +368,7 @@ export function ListRow({
           >
             <span className="min-w-0 truncate tabular-nums text-black/70 dark:text-white/75">
               <span className="font-semibold text-[#0062CC] dark:text-[#64B0FF]">
-                Nieuw bij {activeStoreShort}
+                {product ? `Nieuw bij ${activeStoreShort}` : "Nog product kiezen"}
               </span>
               {otherProduct && otherTotal !== null ? (
                 <>

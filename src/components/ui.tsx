@@ -74,11 +74,13 @@ export function PageHeader({
   title,
   eyebrow,
   right,
+  connected,
   collapseOnScroll = false,
 }: {
   title: string;
   eyebrow?: ReactNode;
   right?: ReactNode;
+  connected?: boolean;
   collapseOnScroll?: boolean;
 }) {
   useCollapseProgress(collapseOnScroll);
@@ -86,8 +88,9 @@ export function PageHeader({
   if (!collapseOnScroll) {
     return (
       <header className="pt-safe sticky top-0 z-30 bg-[var(--canvas)] px-4 pb-2">
+        {connected !== undefined && <OfflineNotice connected={connected} />}
         {eyebrow && <div className="mb-0.5">{eyebrow}</div>}
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex min-h-[38px] items-center justify-between gap-3">
           <h1 className="min-w-0 flex-1 truncate text-[28px] font-bold leading-tight tracking-tight">{title}</h1>
           {right && <div className="shrink-0">{right}</div>}
         </div>
@@ -103,6 +106,7 @@ export function PageHeader({
         paddingBottom: "calc(0.5rem - 0.25rem * var(--collapse, 0))",
       }}
     >
+      {connected !== undefined && <OfflineNotice connected={connected} />}
       {eyebrow && (
         <div
           className="overflow-hidden"
@@ -115,7 +119,7 @@ export function PageHeader({
           {eyebrow}
         </div>
       )}
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex min-h-[38px] items-center justify-between gap-3">
         <h1
           className="min-w-0 flex-1 truncate font-bold leading-tight tracking-tight"
           style={{ fontSize: "calc(28px - 9px * var(--collapse, 0))" }}
@@ -128,20 +132,32 @@ export function PageHeader({
   );
 }
 
-export function SyncPill({ connected, compact = false }: { connected: boolean; compact?: boolean }) {
-  if (compact) {
-    return (
-      <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-[12px] font-medium text-black/55 dark:text-white/55">
-        <span className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-[#34C759]" : "bg-[#FF9500]"}`} />
-        {connected ? "Gezin live" : "Verbinden…"}
-      </span>
-    );
-  }
+const OFFLINE_NOTICE_DELAY_MS = 4000;
+
+/** Subtle notice that only appears when the live connection has been down for a few seconds. */
+export function OfflineNotice({ connected }: { connected: boolean }) {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    if (connected) {
+      const reset = setTimeout(() => setVisible(false), 0);
+      return () => clearTimeout(reset);
+    }
+    const t = setTimeout(() => setVisible(true), OFFLINE_NOTICE_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [connected]);
+
+  if (connected || !visible) return null;
   return (
-    <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-black/[0.05] px-2.5 py-1 text-[13px] font-medium text-black/70 dark:bg-white/10 dark:text-white/75">
-      <span className={`h-2 w-2 rounded-full ${connected ? "bg-[#34C759]" : "bg-[#FF9500]"}`} />
-      {connected ? "Gezin live" : "Verbinden…"}
-    </span>
+    <div
+      role="status"
+      className="pointer-events-none fixed inset-x-0 top-[calc(env(safe-area-inset-top,0px)+0.25rem)] z-50 flex justify-center"
+    >
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-[12px] font-medium text-white backdrop-blur dark:bg-white/85 dark:text-black">
+        <span className="h-1.5 w-1.5 rounded-full bg-[#FF9500]" />
+        Geen verbinding
+      </span>
+    </div>
   );
 }
 

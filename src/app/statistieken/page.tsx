@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Award, PiggyBank, Receipt, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
-import { Card, PageHeader, ProductThumb, StoreBadge, SyncPill } from "@/components/ui";
+import { Card, PageHeader, ProductThumb, StoreBadge } from "@/components/ui";
 import { api } from "@/hooks/api";
 import { useHouseholdSync } from "@/hooks/useHouseholdSync";
 import { formatEuro } from "@/lib/format";
@@ -30,7 +30,7 @@ export default function StatistiekenPage() {
 
   return (
     <main className="mx-auto max-w-xl overflow-x-clip pb-safe">
-      <PageHeader title="Statistieken" right={<SyncPill connected={connected} />} />
+      <PageHeader title="Statistieken" connected={connected} />
 
       <div className="space-y-6 px-4 pt-2 pb-6">
         {data === null && (

@@ -4,6 +4,7 @@ import {
   findConceptBySlugs,
   getCachedConceptMatches,
   getSelectedAiModel,
+  getSelectedAiFallbackModel,
   linkConceptToProduct,
   upsertConcept,
   upsertStoreProducts,
@@ -79,6 +80,9 @@ function containsWord(haystack: string, word: string): boolean {
 
 function passesNegativeRules(q: string, title: string, category = ""): boolean {
   if (!BABY_QUERY_RE.test(q) && BABY_FOOD_RE.test(title)) return false;
+  const berryDish = /\b(?:kwark|yoghurt|drinkyoghurt|smoothie|sap|jam|confituur|muffins?|cake|taart|koek(?:jes)?|reep|repen|ijs|siroop|granola|muesli|havermout|pannenkoeken)\b/;
+  if (/\b(?:blauwe?\s+bes(?:sen)?|blueberries)\b/.test(q) &&
+      !berryDish.test(q) && berryDish.test(`${title} ${normalizeText(category)}`)) return false;
   if (
     CHEESE_QUERY_RE.test(q) &&
     !/\b(?:pizza|pasta|risotto|gnocchi|salami|cracker|koek|soep|saus)\b/.test(q) &&
@@ -200,8 +204,9 @@ async function callWithFallback(
 ): Promise<{ data: unknown; calls: number }> {
   const cfg = getRuntimeConfig();
   const models = [getSelectedAiModel() ?? cfg.openRouterDefaultModel];
-  if (cfg.openRouterFallbackModel && cfg.openRouterFallbackModel !== models[0]) {
-    models.push(cfg.openRouterFallbackModel);
+  const fallbackModel = getSelectedAiFallbackModel() ?? cfg.openRouterFallbackModel;
+  if (fallbackModel && fallbackModel !== models[0]) {
+    models.push(fallbackModel);
   }
   let calls = 0;
   let lastError: unknown;
@@ -224,6 +229,10 @@ const RELEVANCE_VERSION = 3;
 const inFlightExpansions = new WeakMap<object, Map<string, Promise<string[]>>>();
 
 function localSearchAlternatives(query: string): string[] {
+  const berries = /\b(?:blauwe?\s+bes(?:sen)?|blueberries)\b/i.exec(query);
+  if (berries) {
+    return ["blauwe bessen", "blauwe bes", "blueberries"].map((term) => query.replace(berries[0], term));
+  }
   const cheeseFamily = /\b(?:parmezaanse?\s+kaas|parmezaan|parmesan|parmigiano(?:\s+reggiano)?|grana\s+padano)\b/i;
   const cheeseMatch = cheeseFamily.exec(query);
   if (cheeseMatch) {
@@ -345,8 +354,12 @@ export async function filterRelevantProducts(
   const cachedAlternatives = new Set(cached?.alternativeProductIds ?? []);
   const invalid = new Set(cached?.invalidProductIds ?? []);
   const unknown = products.filter((p) => !valid.has(p.id) && !invalid.has(p.id));
-  const knownValid = products.filter((p) => valid.has(p.id));
-  const knownRejected = products.filter((p) => invalid.has(p.id)).map((p) => p.id);
+  const manual = new Set(cached?.manualProductIds ?? []);
+  const knownValid = products.filter((p) => valid.has(p.id) &&
+    (manual.has(p.id) || preFilterBeforeLlm(query, [p]).length > 0));
+  const acceptedKnown = new Set(knownValid.map((p) => p.id));
+  const knownRejected = products.filter((p) => invalid.has(p.id) ||
+    (valid.has(p.id) && !acceptedKnown.has(p.id))).map((p) => p.id);
   const result = (
     list: NormalizedStoreProduct[],
     alternativeProductIds: string[],

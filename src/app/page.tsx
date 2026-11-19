@@ -9,7 +9,7 @@ import { PushToStoresSheet } from "@/components/PushToStoresSheet";
 import { ListRow } from "@/components/ListRow";
 import { BasketSummarySheet, BottomSummaryBar, type StoreFilter } from "@/components/OptimizerCard";
 import { ShoppingModeView } from "@/components/ShoppingModeView";
-import { Card, PageHeader, SyncPill, btnSecondary } from "@/components/ui";
+import { Card, PageHeader, btnSecondary } from "@/components/ui";
 import { api } from "@/hooks/api";
 import { useHouseholdSync } from "@/hooks/useHouseholdSync";
 import type {
@@ -207,11 +207,13 @@ export default function Home() {
         // A list read started before this confirmation can still contain the old assignment.
         ++listReadVersion.current;
         setList((curr) => curr && { ...curr, items: curr.items.map((it) => it.id === id ? updated : it) });
-        if (patch.isProviderLocked !== undefined || patch.assignedProvider !== undefined) {
+        if (!patch.chosenProduct && (patch.isProviderLocked !== undefined || patch.assignedProvider !== undefined)) {
           const storeName = updated.assignedProvider === "picnic" ? "Picnic"
             : updated.assignedProvider === "ah" ? "Albert Heijn" : null;
           if (updated.isProviderLocked && storeName) {
             toast.success(`Vastgezet op ${storeName}`);
+          } else if (patch.assignedProvider !== undefined && storeName) {
+            toast.success(`Verplaatst naar ${storeName}`);
           } else if (storeName && prevItem && updated.assignedProvider !== prevItem.assignedProvider) {
             toast.success(`Ontgrendeld — verplaatst naar ${storeName}`);
           } else {
@@ -370,7 +372,7 @@ export default function Home() {
       <PageHeader
         collapseOnScroll
         title="Boodschappen"
-        eyebrow={<SyncPill connected={connected} compact />}
+        connected={connected}
         right={
           list && list.items.length > 0 ? (
             shoppingMode ? (
@@ -391,7 +393,7 @@ export default function Home() {
                 onClick={() => enterShoppingMode()}
                 className="inline-flex min-h-[38px] items-center gap-1.5 whitespace-nowrap rounded-full bg-black/[0.07] px-3 text-[13.5px] font-semibold text-black/80 transition-colors active:opacity-75 dark:bg-white/12 dark:text-white/85"
               >
-                <ShoppingBasket className="h-4 w-4" /> Winkelmodus
+                <ShoppingBasket className="h-4 w-4" /> Winkel
               </button>
             )
           ) : undefined

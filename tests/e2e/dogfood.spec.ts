@@ -105,7 +105,7 @@ const emptyList = {
   },
 };
 
-test("store lock agrees in the row, comparison sheet and notifications despite delayed reads", async ({ page }) => {
+test("store mode is controlled in the picker while row switching preserves it despite delayed reads", async ({ page }) => {
   const added = await page.request.post("/api/list", { data: { inputs: ["magere kwark"] } });
   expect(added.ok()).toBe(true);
   const { items: [item] } = await added.json();
@@ -139,27 +139,58 @@ test("store lock agrees in the row, comparison sheet and notifications despite d
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await expect.poll(() => staleReadCaptured).toBe(true);
     await otherPill.click();
-    await expect(toasts.getByText(`Vastgezet op ${name(other)}`, { exact: true })).toBeVisible();
+    await expect(toasts.getByText(`Verplaatst naar ${name(other)}`, { exact: true })).toBeVisible();
     await expect(otherPill).toBeEnabled();
     const staleResponse = page.waitForResponse((response) =>
       new URL(response.url()).pathname === "/api/list" && response.request().method() === "GET");
     releaseOldRead();
     await (await staleResponse).finished();
-    await expect(otherPill).toHaveAttribute("title", /Vastgezet/);
+    await expect(otherPill).toHaveAttribute("aria-pressed", "true");
+    await expect(row.locator("svg.lucide-lock")).toHaveCount(0);
+    const patches: unknown[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === endpoint && request.method() === "PATCH") {
+        patches.push(request.postDataJSON());
+      }
+    });
+    await otherPill.click();
+    expect(patches).toEqual([]);
 
     await row.getByTestId("open-item-sheet").click();
     const dialog = page.getByRole("dialog");
-    const unlock = dialog.getByRole("button", { name: "Ontgrendel", exact: true });
-    const lock = dialog.getByRole("button", { name: "Zet vast", exact: true });
-    await expect(dialog.getByText(`Winkel vastgezet op ${name(other)}`)).toBeVisible();
-    await unlock.click();
+    const modes = dialog.getByRole("group", { name: "Winkelkeuze" });
+    const auto = modes.getByRole("button", { name: "Auto", exact: true });
+    const lockOther = modes.getByRole("button", { name: name(other), exact: true });
+    const lockCheapest = modes.getByRole("button", { name: name(cheapest), exact: true });
+    await expect(auto).toHaveAttribute("aria-pressed", "true");
+    await lockOther.click();
+    await expect(lockOther).toHaveAttribute("aria-pressed", "true");
+    await expect(toasts.getByText(`Vastgezet op ${name(other)}`, { exact: true })).toBeVisible();
+    await expect(lockOther).toBeEnabled();
+    const beforeReselect = patches.length;
+    await lockOther.click();
+    expect(patches).toHaveLength(beforeReselect);
+    await auto.click();
     await expect(toasts.getByText(`Ontgrendeld — verplaatst naar ${name(cheapest)}`, { exact: true })).toBeVisible();
     await expect(cheapestPill).toHaveAttribute("aria-pressed", "true");
 
-    await lock.click();
-    await expect(dialog.getByText(`Winkel vastgezet op ${name(cheapest)}`)).toBeVisible();
+    await lockCheapest.click();
+    await expect(lockCheapest).toHaveAttribute("aria-pressed", "true");
     await expect(toasts.getByText(`Vastgezet op ${name(cheapest)}`, { exact: true })).toBeVisible();
-    await unlock.click();
+    await expect(lockCheapest).toBeEnabled();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await otherPill.click();
+    await expect(otherPill).toHaveAttribute("aria-pressed", "true");
+    const switched = await page.request.get(endpoint).then((response) => response.json());
+    expect(switched.item).toMatchObject({ assignedProvider: other, isProviderLocked: true });
+    await expect(otherPill).toBeEnabled();
+    await cheapestPill.click();
+    await expect(cheapestPill).toHaveAttribute("aria-pressed", "true");
+    await row.getByTestId("open-item-sheet").click();
+    await expect(lockCheapest).toHaveAttribute("aria-pressed", "true");
+    await expect(lockCheapest).toBeEnabled();
+    await auto.click();
     await expect(toasts.getByText("Ontgrendeld — winkelkeuze staat weer op automatisch", { exact: true })).toBeVisible();
 
     let releasePatch!: () => void;
@@ -170,15 +201,15 @@ test("store lock agrees in the row, comparison sheet and notifications despite d
       await route.fulfill({ status: 409, json: { error: "Winkelkeuze niet opgeslagen" } });
     });
     try {
-      await lock.click();
-      await expect(lock).toBeDisabled();
+      await lockCheapest.click();
+      await expect(lockCheapest).toBeDisabled();
       await expect(cheapestPill).toBeDisabled();
     } finally {
       releasePatch();
     }
     await expect(toasts.getByText("Winkelkeuze niet opgeslagen", { exact: true })).toBeVisible();
-    await expect(lock).toBeEnabled();
-    await expect(cheapestPill).toHaveAttribute("title", /^Vastzetten/);
+    await expect(lockCheapest).toBeEnabled();
+    await expect(auto).toHaveAttribute("aria-pressed", "true");
     const persisted = await page.request.get("/api/list").then((response) => response.json());
     expect(persisted.items.find((row: { id: number }) => row.id === item.id)).toMatchObject({
       assignedProvider: cheapest,
@@ -188,6 +219,70 @@ test("store lock agrees in the row, comparison sheet and notifications despite d
     releaseOldRead();
     await page.request.delete(endpoint);
   }
+});
+
+test("manual product search selects a Picnic result and can retain an unresolved row", async ({ page }) => {
+  guard(page);
+  const product = {
+    id: "picnic:manual-berries", provider: "picnic", externalId: "manual-berries",
+    title: "Blauwe bessen bakje", brand: "Picnic", isHouseBrand: true,
+    unitSizeRaw: "150 g", baseAmount: 150, baseUnit: "g", regularPriceCents: 299,
+    currentPriceCents: 299, promo: null, isOnlineOnlyPromo: false, imageUrl: null, available: true,
+  };
+  let item = {
+    id: 987654, rawInput: "blauwe bessen", displayName: "Blauwe bessen", requestedQty: 1,
+    requestedUnitRaw: null, targetBaseAmount: null, targetBaseUnit: null, conceptId: null,
+    allowOvershoot: false, assignedProvider: null as string | null, isProviderLocked: false,
+    ahProductId: null, ahQty: 0, ahTotalCents: null, ahProduct: null,
+    picnicProductId: null as string | null, picnicQty: 0, picnicTotalCents: null as number | null,
+    picnicProduct: null as typeof product | null, radarDeals: [], isChecked: false, pushedToStoreAt: null,
+    sortOrder: 0, updatedAt: new Date().toISOString(),
+  };
+  const candidate = {
+    product, packsNeeded: 1, effectiveTotalCents: 299, regularTotalCents: 299,
+    effectiveUnitPriceEuros: 19.93, displayUnit: "kg", savingsCents: 0, timesBought: 0,
+  };
+  const evaluation = { winner: null, alternatives: [], otherResults: [], houseBrandChallenger: null };
+  await page.route("**/api/list", (route) => route.fulfill({ json: { ...emptyList, items: [item] } }));
+  await page.route(`**/api/list/${item.id}`, (route) => {
+    if (route.request().method() === "PATCH") {
+      const patch = route.request().postDataJSON();
+      item = {
+        ...item,
+        assignedProvider: patch.keepUnmatched ? null : "picnic",
+        picnicProductId: patch.keepUnmatched ? null : product.id,
+        picnicProduct: patch.keepUnmatched ? null : product,
+        picnicQty: patch.keepUnmatched ? 0 : 1,
+        picnicTotalCents: patch.keepUnmatched ? null : 299,
+      };
+      return route.fulfill({ json: { item } });
+    }
+    return route.fulfill({ json: {
+      item, parsed: { searchQuery: "blauwe bessen", totalTargetAmount: null },
+      ah: evaluation, picnic: evaluation, recommendedProvider: "ah",
+    } });
+  });
+  await page.route(`**/api/list/${item.id}/search?**`, (route) => {
+    const url = new URL(route.request().url());
+    expect(url.searchParams.get("provider")).toBe("picnic");
+    expect(url.searchParams.get("query")).toBe("blauwe bes");
+    return route.fulfill({ json: { source: "live", candidates: [candidate] } });
+  });
+  await page.goto("/");
+  await page.getByTestId("open-item-sheet").click();
+  await page.getByRole("tab", { name: /Picnic opties/ }).click();
+  await page.getByRole("button", { name: /Niet het juiste product/ }).click();
+  await page.getByRole("textbox", { name: "Zelf zoeken naar product" }).fill("blauwe bes");
+  await page.getByRole("button", { name: "Zoek", exact: true }).click();
+  await expect(page.getByText("Winkelresultaten zonder relevantiefilter")).toBeVisible();
+  await page.getByRole("button", { name: "Kies deze", exact: true }).click();
+  await expect(page.getByText("Gekozen", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Bewaar zonder product", exact: true }).click();
+  await expect(page.getByText("Bewaard: nog product kiezen", { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("list-item-row")).toContainText("Nog product kiezen");
+  expect(item.picnicProductId).toBeNull();
+  expect(item.assignedProvider).toBeNull();
 });
 
 test("quick add uses the same purchase suggestions for browsing and searching", async ({ page }) => {
@@ -285,22 +380,92 @@ test("the header shrinks without drifting after a small scroll", async ({ page }
 test("AI model selection persists and shows the cost assumptions", async ({ page }) => {
   guard(page);
   const reset = await page.request.patch("/api/preferences", {
-    data: { aiModel: "google/gemini-2.5-flash-lite" },
+    data: { aiModel: "google/gemini-2.5-flash-lite", aiFallbackModel: "openai/gpt-4.1-mini" },
   });
   expect(reset.ok()).toBe(true);
   await page.goto("/voorkeuren");
-  const model = page.getByRole("radio", { name: /Mistral Small 3.2/ });
+  await expect(page.getByRole("radiogroup", { name: "AI-model" })).toHaveCount(0);
+  await page.getByRole("navigation", { name: "Hoofdnavigatie" }).getByRole("link", { name: "Winkels" }).click();
+  const matcher = page.getByRole("button", { name: /Slimme AI Matcher/ });
+  await expect(matcher).toBeEnabled();
+  await matcher.click();
+  const dialog = page.getByRole("dialog", { name: "Slimme AI Matcher" });
+  const model = dialog.getByRole("radiogroup", { name: "AI-model", exact: true }).getByRole("radio", { name: /Mistral Small 3.2/ });
   await expect(model).toBeVisible();
   await expect(model).toContainText("$0.025/mnd");
-  await expect(page.getByText(/100 nieuwe zoekopdrachten per maand/)).toBeVisible();
+  await expect(dialog.getByText(/100 nieuwe zoekopdrachten per maand/)).toBeVisible();
   await model.click();
   await expect(model).toHaveAttribute("aria-checked", "true");
   await expect(page.getByText("AI-model bijgewerkt")).toBeVisible();
+  const backups = dialog.getByRole("group", { name: "Reservemodel bij fouten", exact: true });
+  const backup = backups.getByRole("radio", { name: "GPT-4.1 Nano", exact: true });
+  const noBackup = backups.getByRole("radio", { name: "Geen reservemodel", exact: true });
+  await expect(backups.getByRole("radio", { name: "GPT-4.1 Mini", exact: true })).toBeChecked();
+  await backups.getByText("GPT-4.1 Nano", { exact: true }).click();
+  await expect(page.getByText("Reservemodel bijgewerkt", { exact: true })).toBeVisible();
+  await expect(backup).toBeChecked();
+  await expect(backup).toBeEnabled();
+  await backup.focus();
+  await page.keyboard.press("ArrowDown");
+  const miniBackup = backups.getByRole("radio", { name: "GPT-4.1 Mini", exact: true });
+  await expect(miniBackup).toBeChecked();
+  await expect(miniBackup).toBeEnabled();
+  await miniBackup.focus();
+  await page.keyboard.press("ArrowUp");
+  await expect(backup).toBeChecked();
+  await expect(backup).toBeEnabled();
+  await dialog.getByRole("button", { name: "Gereed", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(matcher).toContainText("mistralai/mistral-small-3.2-24b-instruct");
   await page.reload();
+  await expect(matcher).toContainText("mistralai/mistral-small-3.2-24b-instruct");
+  await matcher.click();
   await expect(model).toHaveAttribute("aria-checked", "true");
+  await expect(backup).toBeChecked();
+  await backups.getByText("Geen reservemodel", { exact: true }).click();
+  await expect(page.getByText("Reservemodel bijgewerkt", { exact: true })).toBeVisible();
+  await page.reload();
+  await matcher.click();
+  await expect(noBackup).toBeChecked();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
 });
 
-test("winkels: cards, login sheets, demo seed, brand preference persistence", async ({ page }) => {
+test("winkels: connected store actions share a row equally without demo controls", async ({ page }) => {
+  guard(page);
+  await page.route("**/api/stores", (route) =>
+    route.fulfill({
+      json: {
+        stores: ["ah", "picnic"].map((provider) => ({
+          provider,
+          auth: { status: "authenticated", lastSyncedAt: null },
+        })),
+      },
+    }),
+  );
+  await page.goto("/winkels");
+  await expect(page.getByRole("button", { name: "Ontkoppel", exact: true })).toHaveCount(2);
+  await expect(page.getByTestId("seed-demo-btn")).toHaveCount(0);
+  await expect(page.getByText("Test- & demodata", { exact: true })).toHaveCount(0);
+
+  for (const width of [320, 393, 768]) {
+    await page.setViewportSize({ width, height: 852 });
+    for (const name of ["Synchroniseer kassabonnen", "Synchroniseer bezorgingen"]) {
+      const sync = page.getByRole("button", { name, exact: true });
+      const disconnect = sync.locator("..").getByRole("button", { name: "Ontkoppel", exact: true });
+      const syncBox = await sync.boundingBox();
+      const disconnectBox = await disconnect.boundingBox();
+      expect(syncBox).not.toBeNull();
+      expect(disconnectBox).not.toBeNull();
+      expect(syncBox!.y).toBe(disconnectBox!.y);
+      expect(Math.abs(syncBox!.width - disconnectBox!.width)).toBeLessThan(1);
+      expect(syncBox!.x + syncBox!.width).toBeLessThanOrEqual(disconnectBox!.x);
+      expect(disconnectBox!.x + disconnectBox!.width).toBeLessThanOrEqual(width);
+    }
+  }
+});
+
+test("winkels: cards, login sheets, brand preference persistence", async ({ page }) => {
   guard(page);
   await page.goto("/winkels");
   await expect(page.getByText("Albert Heijn").first()).toBeVisible();
@@ -330,8 +495,8 @@ test("winkels: cards, login sheets, demo seed, brand preference persistence", as
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 
-  await page.getByTestId("seed-demo-btn").click();
-  await expect(page.locator("[data-sonner-toast]").first()).toContainText(/voorkeuren geladen/i, { timeout: 30_000 });
+  const seed = await page.request.post("/api/stores/demo-seed");
+  expect(seed.ok()).toBe(true);
 
   await page.getByRole("navigation", { name: "Hoofdnavigatie" }).getByRole("link", { name: "Voorkeuren" }).click();
   await expect(page.getByText(/Calv/i).first()).toBeVisible({ timeout: 15_000 });
@@ -412,7 +577,7 @@ test("lijstje: compare, promo math, variant swap, optimizer, shopping mode, push
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 
-  // Direct store toggle & lock/unlock on the row
+  // Direct store switching leaves the mode unchanged.
   const kwark = rows.filter({ hasText: /kwark/i }).first();
   const toAh = kwark.getByTestId("toggle-ah");
   const toPicnic = kwark.getByTestId("toggle-picnic");
@@ -422,6 +587,11 @@ test("lijstje: compare, promo math, variant swap, optimizer, shopping mode, push
   await expect(toAh).toHaveAttribute("aria-pressed", "true");
   await toPicnic.click();
   await expect(toPicnic).toHaveAttribute("aria-pressed", "true");
+  await kwark.getByTestId("open-item-sheet").click();
+  await dialog.getByRole("group", { name: "Winkelkeuze" }).getByRole("button", { name: "Picnic", exact: true }).click();
+  await expect(dialog.getByText("Vastgezet op Picnic, ook bij optimaliseren.")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
 
   // Open BasketSummarySheet from the slim bottom bar to optimize & handle Picnic €35 threshold
   await page.getByTestId("open-summary-sheet").click();
@@ -436,22 +606,22 @@ test("lijstje: compare, promo math, variant swap, optimizer, shopping mode, push
   await expect(dialog).toBeHidden();
   await expect(toPicnic).toHaveAttribute("aria-pressed", "true"); // locked item is left alone
 
-  // Park pindakaas at Picnic (below €35), then tap Picnic again to unlock it; "Zet alles op AH" must pull it back.
+  // Unlock only through the product picker; "Zet alles op AH" can then move both items.
   const pindaPicnic = pinda.getByTestId("toggle-picnic");
   const pindaWasPicnic = (await pindaPicnic.getAttribute("aria-pressed")) === "true";
   if (!pindaWasPicnic) {
     await pindaPicnic.click();
     await expect(pindaPicnic).toHaveAttribute("aria-pressed", "true");
   }
-  // Tap active locked Picnic pill to unlock
-  await pindaPicnic.click();
-  await expect(page.locator("[data-sonner-toast]").first()).toContainText(/Ontgrendeld/i);
-
-  // Ensure kwark is at Picnic or pindakaas is at Picnic if needed, or put an unlocked item at Picnic?
-  // Wait: unlocking pindakaas immediately re-evaluates optimal store, while kwark is still at Picnic (< €35).
-  // Unlock kwark too so "Zet alles op AH" moves it to AH!
-  await toPicnic.click();
-  await expect(page.locator("[data-sonner-toast]").first()).toContainText(/Ontgrendeld/i);
+  for (const itemRow of [pinda, kwark]) {
+    await itemRow.getByTestId("open-item-sheet").click();
+    const auto = dialog.getByRole("group", { name: "Winkelkeuze" }).getByRole("button", { name: "Auto", exact: true });
+    await auto.click();
+    await expect(auto).toHaveAttribute("aria-pressed", "true");
+    await expect(auto).toBeEnabled();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+  }
 
   // If Picnic still has unlocked items below €35, "Zet alles op AH" moves them; otherwise verify summary sheet
   await page.getByTestId("open-summary-sheet").click();

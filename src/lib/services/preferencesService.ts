@@ -1,11 +1,13 @@
 import { getDb } from "@/lib/db";
 import {
   countDismissedDeals,
+  listDismissedDeals,
   dismissWeekDeal,
   findConceptBySlugs,
   getConceptById,
   getDefaultProvider,
   getSelectedAiModel,
+  getSelectedAiFallbackModel,
   getDismissedDealKeys,
   getStoreProducts,
   getTopPreferences,
@@ -17,9 +19,10 @@ import {
   setConceptBrandPreference,
   setDefaultProvider,
   setSelectedAiModel,
+  setSelectedAiFallbackModel,
   upsertConcept,
 } from "@/lib/db/repositories";
-import { categorizeReceiptItemsBatch, conceptSlugAliases, slugifyConcept } from "@/lib/engine";
+import { categorizeReceiptItemsBatch, conceptSlugAliases } from "@/lib/engine";
 import { getProvider } from "@/lib/providers/registry";
 import { getRuntimeConfig } from "@/lib/config";
 import { AI_MODELS } from "@/lib/llm/models";
@@ -27,6 +30,7 @@ import type {
   ActiveShoppingProviderId,
   PreferenceView,
   PreferencesResponse,
+  DealsResponse,
   RadarDeal,
   StoreProviderId,
   SyncHistoryResult,
@@ -38,22 +42,6 @@ import { clearSearchCache, optimizeUnlockedList } from "./shoppingService";
 
 const MODES = ["auto", "house_brand", "pinned_brand"];
 const DEFAULT_PROVIDERS: ActiveShoppingProviderId[] = ["ah", "picnic"];
-
-async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((resolve) => {
-        timer = setTimeout(() => resolve(fallback), ms);
-      }),
-    ]);
-  } catch {
-    return fallback;
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
 
 export async function getPreferencesView(): Promise<PreferencesResponse> {
   const prefs = getTopPreferences({ limit: 50 });
@@ -73,10 +61,15 @@ export async function getPreferencesView(): Promise<PreferencesResponse> {
     };
   });
 
-  // Current promos on products the user buys often…
+  return { preferences, settings: getAppSettings() };
+}
+
+export async function getDealsView(): Promise<DealsResponse> {
+  const prefs = getTopPreferences({ limit: 200 });
+  const products = new Map(getStoreProducts(prefs.map((p) => p.storeProductId)).map((p) => [p.id, p]));
+  // Current promos on products the user has bought before.
   const dismissedKeys = getDismissedDealKeys();
   const seenKeys = new Set<string>();
-  const seenTitles = new Set<string>();
   const weekDeals: RadarDeal[] = [];
   for (const p of prefs.filter((x) => x.timesBought > 0)) {
     const product = products.get(p.storeProductId);
@@ -84,7 +77,6 @@ export async function getPreferencesView(): Promise<PreferencesResponse> {
     const dealKey = `product:${p.storeProductId}`;
     if (dismissedKeys.has(dealKey) || seenKeys.has(dealKey)) continue;
     seenKeys.add(dealKey);
-    seenTitles.add(`${product.provider}:${product.title.trim().toLowerCase()}`);
     weekDeals.push({
       dealKey,
       provider: product.provider,
@@ -96,28 +88,8 @@ export async function getPreferencesView(): Promise<PreferencesResponse> {
       timesBought: p.timesBought,
     });
   }
-  // …plus a few store spotlights (best effort; never blocks the page for long).
-  const spotlights = await Promise.all(
-    (["ah", "picnic"] as const).map((id) =>
-      withTimeout(getProvider(id).getPromotions?.() ?? Promise.resolve<RadarDeal[]>([]), 4000, [] as RadarDeal[]),
-    ),
-  );
-  for (const deals of spotlights) {
-    for (const d of deals.slice(0, 5)) {
-      const dealKey = d.dealKey ?? `spotlight:${d.provider}:${slugifyConcept(d.title)}`;
-      const titleKey = `${d.provider}:${d.title.trim().toLowerCase()}`;
-      if (dismissedKeys.has(dealKey) || seenKeys.has(dealKey) || seenTitles.has(titleKey)) continue;
-      seenKeys.add(dealKey);
-      seenTitles.add(titleKey);
-      weekDeals.push({ ...d, dealKey });
-    }
-  }
-  return {
-    preferences,
-    weekDeals,
-    dismissedDealsCount: countDismissedDeals(),
-    settings: getAppSettings(),
-  };
+  const dismissedDeals = listDismissedDeals().filter((d) => d.dealKey.startsWith("product:"));
+  return { weekDeals, dismissedDeals, dismissedDealsCount: dismissedDeals.length };
 }
 
 export function getAppSettings(): NonNullable<PreferencesResponse["settings"]> {
@@ -125,7 +97,7 @@ export function getAppSettings(): NonNullable<PreferencesResponse["settings"]> {
   return {
     defaultProvider: getDefaultProvider(),
     aiModel: getSelectedAiModel() ?? config.openRouterDefaultModel,
-    aiFallbackModel: config.openRouterFallbackModel,
+    aiFallbackModel: getSelectedAiFallbackModel() ?? config.openRouterFallbackModel,
     aiConfigured: config.hasOpenRouterKey,
   };
 }
@@ -133,16 +105,20 @@ export function getAppSettings(): NonNullable<PreferencesResponse["settings"]> {
 export function updateConceptPreference(req: UpdateConceptPreferenceRequest): void {
   const hasDefaultProvider = req.defaultProvider !== undefined;
   const hasAiModel = req.aiModel !== undefined;
+  const hasAiFallbackModel = req.aiFallbackModel !== undefined;
   const hasConceptUpdate = req.conceptId !== undefined || req.brandPreferenceMode !== undefined;
   const hasDismissDeal = typeof req.dismissDealKey === "string" && req.dismissDealKey.trim().length > 0;
   const hasRestoreDeal = typeof req.restoreDealKey === "string" && req.restoreDealKey.trim().length > 0;
   const hasRestoreAllDeals = req.restoreAllDeals === true;
 
-  if (!hasDefaultProvider && !hasAiModel && !hasConceptUpdate && !hasDismissDeal && !hasRestoreDeal && !hasRestoreAllDeals) {
+  if (!hasDefaultProvider && !hasAiModel && !hasAiFallbackModel && !hasConceptUpdate && !hasDismissDeal && !hasRestoreDeal && !hasRestoreAllDeals) {
     throw badRequest("Geen wijziging opgegeven");
   }
   if (hasAiModel && !AI_MODELS.some((model) => model.id === req.aiModel)) {
     throw badRequest("Ongeldig AI-model");
+  }
+  if (hasAiFallbackModel && req.aiFallbackModel !== "" && !AI_MODELS.some((model) => model.id === req.aiFallbackModel)) {
+    throw badRequest("Ongeldig AI-reservemodel");
   }
 
   if (hasDismissDeal) {
@@ -164,6 +140,7 @@ export function updateConceptPreference(req: UpdateConceptPreferenceRequest): vo
   }
 
   if (hasAiModel) setSelectedAiModel(req.aiModel!);
+  if (hasAiFallbackModel) setSelectedAiFallbackModel(req.aiFallbackModel!);
 
   if (hasConceptUpdate) {
     if (req.conceptId === undefined || !Number.isInteger(req.conceptId)) throw badRequest("conceptId ontbreekt");
